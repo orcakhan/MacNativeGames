@@ -24984,7 +24984,7 @@ int mtl_probe_layer_merge(void) {
    wrote / C2 nothing wrote it; D, D', D0 barriers with and without bits; E, E' an inline uniform update; F the compute
    program missing; V an eye replay; W1 / W2 a draw that writes storage / reads a texture pool; X the dispatch samples the
    colour target; Y an indirect dispatch; Z the dispatch's storage buffer over the colour target's storage; T / T2 sampled
-   texture storage elsewhere / in what the dispatch writes; R1, R1b, R2 vertex and index buffers; U the shader variant the
+   texture storage elsewhere / in what the dispatch writes; R1, R1b, R1c, R2 vertex and index buffers (R1c: a stream of unknown size); U the shader variant the
    draw will use (prog_fit), not the one its program holds while the scan runs.
    Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
    TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
@@ -25202,6 +25202,8 @@ int mtl_probe_cs_hoist(void) {
     checked += csp_case("R1 vertex buffer the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
     w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, ua + 8192, 256); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
     checked += csp_case("R1b vertex buffer in other memory", ops_h, 1, 1, -1, s0, 1, 0);
+    w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, sa + 4096, 0); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);   // size 0: the pool decides the extent
+    checked += csp_case("R1c vertex buffer of unknown size", ops_h, 2, 0, 0, s0, 1, 0);
     w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, 0, 0); w = csp_draw_idx(w, sa + 4096); csp_tail(w, sa, SZ, &pc, 0, &pg);
     checked += csp_case("R2 index buffer the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
     /* U: the same program's second draw has integer vertex attributes, so prog_fit gives it the variant that reads uniform

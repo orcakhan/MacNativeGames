@@ -67,7 +67,7 @@ static int csh_attachment_hit(uint64_t addr, uint64_t size) {
 static int csh_draw_reads(NvProg *pr, const p_draw *dw, const p_draw_idx *di, csh_rng *r, int *n) {
     if (!pr || pr->missing || pr->geo || pr->sh[2] || pr->sh[3] || pr->sh[4] || S.raster_discard) return 0;
     if ((dw && (dw->ind || dw->prim == 0x40)) || (di && di->ind)) return 0;   // indirect: the record the GPU reads; mesh: g_mtk's stages
-    for (int k = 0; k < 16; k++) if (S.vbuf[k].size && !csh_add(r, n, S.vbuf[k].address, S.vbuf[k].size)) return 0;   // an empty stream reads nothing
+    for (int k = 0; k < 16; k++) if (S.vbuf[k].address && !csh_add(r, n, S.vbuf[k].address, S.vbuf[k].size)) return 0;   // no address: nothing bound; a size of 0 is an unknown extent here (the pool decides, vattr_base)
     if (di && !csh_add(r, n, di->ibuf, (uint64_t)(di->count > 0 ? di->count : 0) * 4 + 16)) return 0;   // as nxnative: the widest index type, and a margin
     for (int st = 0; st < 2; st++) {
         __unsafe_unretained NvShader *sh = pr->sh[st];
