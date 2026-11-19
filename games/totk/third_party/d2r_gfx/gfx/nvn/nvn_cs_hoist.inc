@@ -32,11 +32,15 @@ enum { CSH_STOPS = 12 };
 static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[CSH_STOPS]; } g_csh;
 static const char *const csh_stop_name[CSH_STOPS] = {"first_draw", "later_draw", "dispatch_refused", "memory_conflict", "dispatch_limit", "other_op", "bad_cursor",
     "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end"};
+static _Atomic int g_csh_on = -1;   // -1 until TOTK_CS_HOIST is read; "flag cs_hoist <0|1>" switches it while the game runs (csh_set)
 static int csh_on(void) {
-    static int m = -1;
-    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e && atoi(e) == 1; if (m) MLOG("TOTK_CS_HOIST=1: compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); }
+    int m = atomic_load_explicit(&g_csh_on, memory_order_relaxed);
+    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e && atoi(e) == 1; int was = -1; if (atomic_compare_exchange_strong(&g_csh_on, &was, m) && m) MLOG("TOTK_CS_HOIST=1: compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); m = atomic_load(&g_csh_on); }
     return m;
 }
+/* "flag cs_hoist <0|1>" (TOTK_INPUT_FILE): the same frame with and without the hoist in one session (image comparison).
+   Dispatches already moved in the current submission are still skipped by csh_take, which runs whatever the switch says. */
+static void csh_set(int v) { (void)csh_on(); atomic_store(&g_csh_on, v != 0); MLOG("[flag] cs_hoist = %d", v != 0); }
 // Whether the replay's dispatch command op already ran ahead of its pass (then it is taken off the list)
 static int csh_take(const uint8_t *op) {
     if (g_csh.sub != g_sub_serial) { g_csh.n = 0; return 0; }   // moves of an earlier submission the replay never met

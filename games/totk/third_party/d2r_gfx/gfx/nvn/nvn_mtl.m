@@ -4082,6 +4082,7 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
 }
 static void dead_stat_print(unsigned long long frame);
 static void function_cache_set(int on);   // below, with function_cache_on
+static void csh_set(int v);   // nvn_cs_hoist.inc
 /* Tears of the Kingdom 1.4.3's "4K, MetalFX to 5K" picture preset (game_patches_v143.c, PR #2240): set as a flag by
    that runtime, read by output_upscale; 0 in every other game, which never sets it. */
 static _Atomic int g_mfx_5k_output;
@@ -4097,6 +4098,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
     if (!strcmp(name, "function_cache")) { function_cache_set(v); MLOG("[flag] function_cache = %d (border and varying shader variants looked up in the per-shader function cache)", v != 0); return; }
     if (!strcmp(name, "gpu_trace")) { gpu_trace_set(v); MLOG("[flag] gpu_trace = %d (pipeline binds recorded for GPU failure reports)", v != 0); return; }
+    if (!strcmp(name, "cs_hoist")) { csh_set(v); return; }   // TOTK_CS_HOIST while playing (nvn_cs_hoist.inc)
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "skipvc")) { atomic_store(&g_skipvc_any, v); MLOG("[flag] skipvc = %d", v); return; }
