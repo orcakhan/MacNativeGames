@@ -25237,6 +25237,12 @@ int mtl_probe_cs_hoist(void) {
     for (int i = 0; i < NP; i++) serial_del(pp[i].serial);
     for (int i = 0; i < 4; i++) serial_del((uint64_t[]){dt.serial, tz.serial, sx.serial, sy.serial}[i]);
     mtl_pool_del(u0); free(u0); defer_obj_release(dtex); defer_obj_release(stex);
+    {   // every full scan ended in exactly one of the stop counters 0 to 7, 10 and 11 (8 and 9 are calls that did not scan)
+        uint64_t ended = 0; for (int i = 0; i < CSH_STOPS; i++) if (i != 8 && i != 9) ended += g_csh.stop[i];
+        if (ended != g_csh.scans) MDIE("cs-hoist probe: %llu full scans but %llu stop counts (0-7, 10, 11)", (unsigned long long)g_csh.scans, (unsigned long long)ended);
+        checked++;
+        csh_log_stats();
+    }
     memset(&R, 0, sizeof R); state_reset(); g_csh_probe_neg = 0;
     for (int i = 0; i < 3; i++) serial_del((uint64_t[]){pg.serial, pc.serial, tt.serial}[i]);
     mtl_pool_del(s0); free(s0); defer_obj_release(rb); defer_obj_release(tex);

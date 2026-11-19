@@ -22,8 +22,13 @@ enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
 /* op: the dispatch commands run ahead and not yet met by the replay, in submission sub; moved: dispatches run ahead; scans:
    full scans; stop[]: why scans ended or did not run: 0 the first draw's reads cannot be listed, 1 a later draw's, 2 a dispatch
    refused, 3 a dispatch writes what a draw before it reads, 4 the dispatch limit, 5 another command or a barrier, 6 a bad
-   cursor, 7 depth already written, 8 the pre-scan found no dispatch, 9 refused at entry */
-static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[10]; } g_csh;
+   cursor, 7 depth already written, 8 the pre-scan found no dispatch, 9 refused at entry, 10 the scan limit (CSH_OPS commands),
+   11 the scan reached the end of the stream. Every full scan (scans) ends in exactly one of 0 to 7, 10 and 11; 8 and 9 are
+   calls that did not scan. csh_stop_name gives the short names the statistics line prints. */
+enum { CSH_STOPS = 12 };
+static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[CSH_STOPS]; } g_csh;
+static const char *const csh_stop_name[CSH_STOPS] = {"first_draw", "later_draw", "dispatch_refused", "memory_conflict", "dispatch_limit", "other_op", "bad_cursor",
+    "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end"};
 static int csh_on(void) {
     static int m = -1;
     if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e && atoi(e) == 1; if (m) MLOG("TOTK_CS_HOIST=1: compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); }
@@ -142,6 +147,12 @@ static int csh_ahead(void) {
     }
     return 0;   // the full scan stops at the same count
 }
+// The statistics line: the current frame, the dispatches moved, the full scans and each stop counter by name (the first moved dispatch, then every 10,000)
+static void csh_log_stats(void) {
+    char b[512]; int n = 0;
+    for (int i = 0; i < CSH_STOPS && n < (int)sizeof b; i++) n += snprintf(b + n, sizeof b - (size_t)n, " %s=%llu", csh_stop_name[i], (unsigned long long)g_csh.stop[i]);
+    MLOG("[cs-hoist] frame %llu: moved=%llu scans=%llu stops:%s", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_csh.moved, (unsigned long long)g_csh.scans, b);
+}
 // The draw about to open a pass (pr0, dw0 / di0; no pass open): runs the dispatches that can come before the pass now
 static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
     if (g_csh_probe_neg == 2) return;
@@ -156,31 +167,35 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
     static typeof(S) Ssave; memcpy(&Ssave, &S, sizeof S); typeof(R) Rsave = R; int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty, moved = 0;
     int dwrote = R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st);   // a draw of the stretch writes depth or stencil (a compute view may read stencil)
     fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n}; memcpy(cur.ret, g_ret, (size_t)g_ret_n * sizeof *g_ret);
+    int why = 10;   // the stop counter this scan ends in: the scan limit unless a break below says otherwise
     for (int guard = 0; guard < CSH_OPS; guard++) {
         const uint8_t *q; op_hdr h; const void *a;
-        if (!fz_next(&cur, &q, &h, &a)) { if (cur.bad) g_csh.stop[6]++; break; }   // the end of the submission or an event wait ends it too
-        if (csh_stop_op(h.op, a)) { g_csh.stop[5]++; break; }
+        if (!fz_next(&cur, &q, &h, &a)) { why = cur.bad ? 6 : 11; break; }   // the end of the submission or an event wait ends it too
+        if (csh_stop_op(h.op, a)) { why = 5; break; }
         if (h.op == OP_BARRIER) continue;   // without bits
         if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) {
-            if (!csh_draw_reads(csh_prog(S.prog), h.op == OP_DRAW ? a : NULL, h.op == OP_DRAW_IDX ? a : NULL, rd, &nrd)) { g_csh.stop[1]++; break; }
+            if (!csh_draw_reads(csh_prog(S.prog), h.op == OP_DRAW ? a : NULL, h.op == OP_DRAW_IDX ? a : NULL, rd, &nrd)) { why = 1; break; }
             if (R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st)) dwrote = 1;
             continue; }
         if (h.op == OP_DISPATCH) {
             const p_dispatch *dp = a;
             if (!dp->indirect && (!dp->x || !dp->y || !dp->z)) continue;   // an empty grid: dispatch() runs nothing and ends no pass
             { int ran = 0; for (int i = 0; i < g_csh.n; i++) ran |= g_csh.op[i] == q;   // already run ahead by an earlier scan the replay has not passed yet
-              if (ran) { g_csh.stop[2]++; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
+              if (ran) { why = 2; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
             NvProg *cpr = csh_prog(S.cprog ? S.cprog : S.prog);   // as dispatch()
             int nwr = 0, depth = 0;
-            if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr, &depth)) { g_csh.stop[2]++; break; }
-            if (depth && dwrote) { g_csh.stop[7]++; break; }   // it would miss depth the draws before it wrote
-            if (csh_hit(wr, nwr, rd, nrd)) { g_csh.stop[3]++; break; }   // the draws before it read what it writes
-            if (g_csh.n >= CSH_MAX) { g_csh.stop[4]++; break; }
+            if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr, &depth)) { why = 2; break; }
+            if (depth && dwrote) { why = 7; break; }   // it would miss depth the draws before it wrote
+            if (csh_hit(wr, nwr, rd, nrd)) { why = 3; break; }   // the draws before it read what it writes
+            if (g_csh.n >= CSH_MAX) { why = 4; break; }
+            PD("H %llu dispatch %s moved ahead of the pass%s", (unsigned long long)(g_stat_pass + 1), cpr->sh[5]->key, depth ? " (samples the pass's depth, which no draw before it wrote)" : "");
             dispatch(dp); g_csh.op[g_csh.n++] = q; g_csh.moved++; moved++;
+            if (g_csh.moved == 1 || g_csh.moved % 10000 == 0) csh_log_stats();
             continue; }
         if (state_op(h.op, a)) continue;
-        g_csh.stop[5]++; break;   // anything else may end the pass, write memory or depend on the order (targets, copies, clears, events, counters)
+        why = 5; break;   // anything else may end the pass, write memory or depend on the order (targets, copies, clears, events, counters)
     }
+    g_csh.stop[why]++;
     memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty || moved; g_dss_dirty = dss_dirty || moved;
     { static int once; if (moved && !once++) MLOG("[cs-hoist] compute dispatches run ahead of the pass they would split: first case pass %llu, %d dispatches", (unsigned long long)g_stat_pass + 1, moved); }
 }
