@@ -24985,7 +24985,9 @@ int mtl_probe_layer_merge(void) {
    program missing; V an eye replay; W1 / W2 a draw that writes storage / reads a texture pool; X the dispatch samples the
    colour target; Y an indirect dispatch; Z the dispatch's storage buffer over the colour target's storage; T / T2 sampled
    texture storage elsewhere / in what the dispatch writes; R1, R1b, R1c, R2 vertex and index buffers (R1c: a stream of unknown size); U the shader variant the
-   draw will use (prog_fit), not the one its program holds while the scan runs.
+   draw will use (prog_fit), not the one its program holds while the scan runs; C3 a later draw of the stretch writes the
+   depth the dispatch samples; Z2 the dispatch's uniform buffer over the colour target's storage; W3 a draw samples a handle
+   that names no registered texture.
    Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
    TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
 static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
@@ -25211,6 +25213,26 @@ int mtl_probe_cs_hoist(void) {
     w = csp_vattr(ops_h, 1, 0x25); w = csp_ubo(w, 0, 0, sa, SZ); w = csp_pre(w, pgu, &tt); w = lp_draw(w, 1); w = csp_vattr(w, 1, 0x27); w = lp_draw(w, 2);
     w = csp_tail(w, sa, SZ, &pc, 0, &pg) - 8; w = csp_vattr(w, 0, 0); lp_end(w);
     checked += csp_case("U variant the draw will use", ops_h, 2, 0, 3, s0, 1, 0);
+    // C3: the first draw writes no depth, a later draw of the stretch does; the dispatch samples the depth target after it
+    w = lp_prog(ops_h, &pg); w = csp_rt_d(w, &tt, &dt); w = lp_sc(w, 0, 0, 8, 8); w = csp_ds(w, 0, 0); w = lp_draw(w, 1); w = csp_ds(w, 1, 1); w = lp_draw(w, 2);
+    w = csp_tex(w, 5, 0, T_DT); csp_tail(w, sa, SZ, pcd, 0, &pg);
+    checked += csp_case("C3 a later draw writes the depth the dispatch samples", ops_h, 2, 0, 7, s0, 1, 0);
+    /* Z2: the dispatch's uniform buffer lies over the colour target's storage (tz: s0 + 8192); its storage buffer is on u0
+       (away from the indirect grid), so only the uniform check can refuse it */
+    NSString *cusrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct _23 { uint _m0[1]; };\n"
+        "struct spvDescriptorSetBuffer0 { device _23* cp_s0 [[id(0)]]; constant _23* cb0 [[id(1)]]; };\n"
+        "kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 g [[thread_position_in_grid]])\n{\n    (*spvDescriptorSet0.cp_s0)._m0[g.x] += 1u;\n}\n";
+    id<MTLLibrary> cul = totk_msl_library(cusrc, &e); if (!cul) MDIE("cs-hoist probe shaders: %s", e.localizedDescription.UTF8String);
+    NvShader *cs_u = [NvShader new]; cs_u->fn = [cul newFunctionWithName:@"main0"]; cs_u->src = cusrc; cs_u->stage = 5; strcpy(cs_u->key, "probe-cs-hoist-cs-ubo");
+    cs_u->rf.nb = 2; cs_u->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SBUFP, .rw = 1, .aid = 0, .reg = 0}; cs_u->rf.b[1] = (nvn_rbind){.kind = NVN_RB_CBUF, .aid = 1, .reg = 0};
+    cs_u->rf.tg[0] = 64; cs_u->rf.tg[1] = 1; cs_u->rf.tg[2] = 1; cs_u->ae = [cs_u->fn newArgumentEncoderWithBufferIndex:0]; cs_u->arg_len = cs_u->ae.encodedLength;
+    NvProg *cpr_u = [NvProg new]; cpr_u->sh[5] = cs_u; prog_t pcu; memset(&pcu, 0, sizeof pcu); pcu.serial = 0xffffffdc; serial_put(pcu.serial, cpr_u);
+    w = csp_pre(ops_h, &pg, &tz); w = lp_draw(w, 1); w = csp_ubo(w, 5, 0, sa + 8192, 256); csp_tail(w, ua + 12288, 256, &pcu, 0, &pg);
+    checked += csp_case("Z2 uniform buffer over the colour target", ops_h, 2, 0, 2, s0, 0, 0);
+    serial_del(pcu.serial);
+    // W3: the first draw samples a texture handle that names no registered texture (its storage cannot be listed)
+    w = csp_pre(ops_h, pgt, &tt); w = csp_tex(w, 1, 0, 0x5f); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("W3 draw samples an unregistered handle", ops_h, 2, 0, 0, s0, 1, 0);
     for (int i = T_TT; i <= T_SY; i++) mtl_reg_tex(i, NULL, NULL);
     for (int i = 0; i < NP; i++) serial_del(pp[i].serial);
     for (int i = 0; i < 4; i++) serial_del((uint64_t[]){dt.serial, tz.serial, sx.serial, sy.serial}[i]);
