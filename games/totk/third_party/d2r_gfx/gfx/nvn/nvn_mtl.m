@@ -24978,7 +24978,8 @@ int mtl_probe_layer_merge(void) {
    dispatch moved once and skipped where the replay meets it (s0[0] == 1), both draws' pixels. G: a moved pointer left from an
    earlier submission (the scan off for that list) must not skip the same command of a new one (s0 rises by exactly 1). H: a
    first draw with an empty scissor is skipped before the scan, then a dispatch and a draw: the dispatch runs once, nothing
-   moved. Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
+   moved. I: no render target, so every draw scans again: a dispatch already run ahead is not run again (s0 rises by 1).
+   Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
    TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
 static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
 static uint8_t *csp_ssbo(uint8_t *w, int st, int idx, uint64_t a, uint64_t n) { p_bind_buf b = {st, idx, a, n}; return lp_rec(w, OP_BIND_SSBO, &b, sizeof b); }
@@ -25059,6 +25060,15 @@ int mtl_probe_cs_hoist(void) {
     csp_run("H empty first draw", ops_h, 1, 0); checked += 2;
     mtl_sub_commit(); mtl_finish();
     if (s0[0] != 3) MDIE("cs-hoist probe H: s0[0] = %u, expected 3", s0[0]);
+    checked++;
+    // I: no render target, so no pass opens and every draw scans again: a dispatch already run ahead must not run again
+    w = lp_prog(ops_h, &pg); w = lp_draw(w, 5); w = lp_draw(w, 6);
+    w = csp_ssbo(w, 5, 0, sa, SZ); w = lp_prog(w, &pc); w = csp_dispatch(w); w = lp_prog(w, &pg); w = lp_draw(w, 7); lp_end(w);
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+    R.has_rt = 0; R.has_sc = 0;
+    csp_run("I no pass opens", ops_h, 0, 1); checked += 2;
+    mtl_sub_commit(); mtl_finish();
+    if (s0[0] != 4) MDIE("cs-hoist probe I: s0[0] = %u, expected 4 (a dispatch already run ahead ran again)", s0[0]);
     checked++;
     memset(&R, 0, sizeof R); state_reset(); g_csh_probe_neg = 0;
     for (int i = 0; i < 3; i++) serial_del((uint64_t[]){pg.serial, pc.serial, tt.serial}[i]);

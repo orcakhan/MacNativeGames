@@ -9,7 +9,9 @@
    This version lists only storage and uniform buffers: a draw with any other binding, a writable storage buffer, vertex,
    index or indirect buffers, or a geometry stage, and a dispatch with any other binding or an indirect grid, stop the scan.
    Not while another mechanism replays or rewrites these commands (stereo eyes, world freeze, pass fusion and deferral, cube
-   groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, or past the cursor's 8 return addresses.
+   groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, past the cursor's 8 return addresses, or once
+   virtual-pool aliases exist (totk_vpool_aliases_used: address ranges compared here may then name the same storage). A
+   dispatch already run ahead and not yet met by the replay (a later draw scanned again with no pass opened) stops the scan.
    TOTK_CS_HOIST=1 on (off by default for now). */
 static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
@@ -56,7 +58,7 @@ static int csh_cs(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw) {
     for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
         switch (b->kind) {
             case NVN_RB_SBUFP: if (b->reg >= 16 || !csh_add(w, nw, S.ssbo[5][b->reg].addr, S.ssbo[5][b->reg].size)) return 0; break;
-            case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16) return 0; break;   // reads: the draws before it write no memory
+            case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16) return 0; break;   // reads: the draws before it write only their attachments (the check against attachment storage comes in Task 2)
             default: return 0; } }
     return 1;
 }
@@ -99,7 +101,7 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
     if (g_csh.sub != g_sub_serial) { g_csh.n = 0; g_csh.sub = g_sub_serial; }   // moves of an earlier submission the replay never met
     int clear = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) clear |= R.clear_c[i];   // the pass's load action comes before anything a moved dispatch does
     if (g_eye_pass || g_frz_state || g_fz.active || g_fz_checking || g_defer_replaying || g_defer_nact || g_cg.replaying || g_lay.active || tbdr_on() || g_geo_ras.pr
-        || clear || !g_exec_next || g_ret_n > 8) { g_csh.stop[9]++; return; }
+        || clear || !g_exec_next || g_ret_n > 8 || totk_vpool_aliases_used()) { g_csh.stop[9]++; return; }   // virtual aliases: guest address ranges no longer tell storage apart
     if (!csh_ahead()) { g_csh.stop[8]++; return; }
     g_csh.scans++;
     static csh_rng rd[CSH_RN], wr[CSH_RN]; int nrd = 0;
@@ -117,6 +119,8 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
         if (h.op == OP_DISPATCH) {
             const p_dispatch *dp = a;
             if (!dp->indirect && (!dp->x || !dp->y || !dp->z)) continue;   // an empty grid: dispatch() runs nothing and ends no pass
+            { int ran = 0; for (int i = 0; i < g_csh.n; i++) ran |= g_csh.op[i] == q;   // already run ahead by an earlier scan the replay has not passed yet
+              if (ran) { g_csh.stop[2]++; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
             NvProg *cpr = csh_prog(S.cprog ? S.cprog : S.prog);   // as dispatch()
             int nwr = 0;
             if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr)) { g_csh.stop[2]++; break; }
