@@ -24,5 +24,17 @@ int totk_vpool_fini(pool_t *pool);
 int totk_vpool_map(pool_t *virtual_pool, int count, const totk_mapping_request *requests);
 // TOTK diagnostics: CPU address of the physical backing of a virtual-pool range (1 = mapped, *cpu set).
 int totk_vpool_backing(uintptr_t va, uint64_t len, uintptr_t *cpu);
+/* A copy of the virtual pools' spans and their mappings (sorted, disjoint), for judging many ranges without the lock:
+   totk_vpool_view_sync refreshes it (one lock, only when the mappings changed since), totk_vpool_canon reads it. */
+enum { TOTK_VPOOL_MAX_POOLS = 256, TOTK_VPOOL_MAX_MAPS = 4096 };
+typedef struct { uintptr_t lo, hi; } totk_vpool_span;
+typedef struct { uintptr_t va, cpu; uint64_t size; } totk_vpool_ent;
+typedef struct { uint64_t gen; int npool, nmap, lost; totk_vpool_span pool[TOTK_VPOOL_MAX_POOLS]; totk_vpool_ent map[TOTK_VPOOL_MAX_MAPS]; } totk_vpool_view;
+void totk_vpool_view_sync(totk_vpool_view *view);
+/* The address of the storage behind [va, va + len): 1 with *canon = the physical backing when the range lies in a virtual
+   pool and is mapped throughout (by one mapping, or by adjacent ones whose backing follows on), or = va when it touches no
+   virtual pool (judged by the pools' spans, mapped or not); 0 otherwise (an unmapped hole, mappings whose backing does not
+   follow on, a range across a pool's border, an empty or wrapping range, or a table that overflowed). */
+int totk_vpool_canon(const totk_vpool_view *view, uintptr_t va, uint64_t len, uintptr_t *canon);
 // Once virtual aliases have existed, address-only write tracking is insufficient.
 int totk_vpool_aliases_used(void);

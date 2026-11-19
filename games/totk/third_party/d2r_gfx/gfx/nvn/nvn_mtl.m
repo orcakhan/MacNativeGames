@@ -24987,7 +24987,7 @@ int mtl_probe_layer_merge(void) {
    texture storage elsewhere / in what the dispatch writes; R1, R1b, R1c, R2 vertex and index buffers (R1c: a stream of unknown size); U the shader variant the
    draw will use (prog_fit), not the one its program holds while the scan runs; C3 a later draw of the stretch writes the
    depth the dispatch samples; Z2 the dispatch's uniform buffer over the colour target's storage; W3 a draw samples a handle
-   that names no registered texture.
+   that names no registered texture; AL1 to AL5 virtual-pool aliases (ranges judged by the physical storage behind them).
    Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
    TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
 static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
@@ -25233,6 +25233,56 @@ int mtl_probe_cs_hoist(void) {
     // W3: the first draw samples a texture handle that names no registered texture (its storage cannot be listed)
     w = csp_pre(ops_h, pgt, &tt); w = csp_tex(w, 1, 0, 0x5f); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
     checked += csp_case("W3 draw samples an unregistered handle", ops_h, 2, 0, 0, s0, 1, 0);
+    /* AL: virtual-pool aliases made as nvnMemoryPoolInitialize / MapVirtual / Finalize make them (last: they stay in use for the
+       rest of the process). Physical pool P (4 pages, flags as the game's 0x189: its own host pages, which the CPU reads here)
+       and virtual pools V1, V2 (4 pages, 0x2a1, GPU-visible): V1[0] <- P[0] and V1[1] <- P[1] (two requests, adjacent in both),
+       V2[0] <- P[0], V2[1] <- P[2], V2[2] unmapped, V2[3] <- P[1]. The dispatch's storage buffer is on V1. AL1 / AL1b: the draw
+       reads P[0] through V2 / through P's own address: not moved. AL2: the draw reads P[1] through V2[3]: moved. AL2b / AL2c:
+       the dispatch's buffer crosses V1[0] and V1[1] (contiguous storage): moved past a draw reading P[2], not past one reading
+       the start of P[1]. AL3a / AL3b: the draw reads V2's unmapped page / across V2[0] and V2[1] (storage not contiguous): its
+       reads cannot be listed. AL3c: the dispatch's buffer crosses V1[1] into V1[2] (unmapped): refused. AL4: a page mapped
+       again is judged by its new backing. AL5: the dispatch samples, through V1, the colour target's storage (P's address). */
+    {
+        enum { VPG = TOTK_VPOOL_PAGE };
+        void *vps = NULL; if (posix_memalign(&vps, VPG, 4 * VPG) || !vps) MDIE("cs-hoist probe memory"); memset(vps, 0, 4 * VPG);
+        pool_t vp = {.magic = MAGIC('P', 'O', 'O', 'L'), .flags = 0x189, .mem = vps, .size = 4 * VPG}, v1 = {.magic = MAGIC('P', 'O', 'O', 'L'), .flags = 0x2a1, .size = 4 * VPG}, v2 = v1;
+        if (!totk_vpool_init(&vp) || !totk_vpool_init(&v1) || !totk_vpool_init(&v2)) MDIE("cs-hoist probe: physical / virtual pools");
+        const NVNmemoryPool *pp_ = (const NVNmemoryPool *)(const void *)&vp;
+        totk_mapping_request m1[2] = {{pp_, 0, 0, VPG, 1, 0}, {pp_, VPG, VPG, VPG, 1, 0}}, m2[3] = {{pp_, 0, 0, VPG, 1, 0}, {pp_, 2 * VPG, VPG, VPG, 1, 0}, {pp_, VPG, 3 * VPG, VPG, 1, 0}};
+        if (!totk_vpool_map(&v1, 1, &m1[0]) || !totk_vpool_map(&v1, 1, &m1[1]) || !totk_vpool_map(&v2, 3, m2)) MDIE("cs-hoist probe: virtual mappings");
+        const uint64_t pa = (uint64_t)(uintptr_t)vp.mem, v1a = (uint64_t)(uintptr_t)v1.mem, v2a = (uint64_t)(uintptr_t)v2.mem;
+        const uint32_t *p0 = (const uint32_t *)vp.mem, *p01 = (const uint32_t *)(vp.mem + VPG - 128), *p12 = (const uint32_t *)(vp.mem + 2 * VPG - 128);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL1 draw reads through another virtual pool what the dispatch writes", ops_h, 2, 0, 3, p0, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, pa, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL1b draw reads through the physical pool what the dispatch writes", ops_h, 2, 0, 3, p0, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + 3 * VPG, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL2 draw reads other physical memory through a virtual pool", ops_h, 1, 1, -1, p0, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + VPG, 256); w = lp_draw(w, 1); csp_tail(w, v1a + VPG - 128, 256, &pc, 0, &pg);
+        checked += csp_case("AL2b dispatch writes across two adjacent mappings, the draw reads elsewhere", ops_h, 1, 1, -1, p01, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + 3 * VPG, 256); w = lp_draw(w, 1); csp_tail(w, v1a + VPG - 128, 256, &pc, 0, &pg);
+        checked += csp_case("AL2c dispatch writes across two adjacent mappings what the draw reads", ops_h, 2, 0, 3, p01, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + 2 * VPG, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL3a draw reads an unmapped page of a virtual pool", ops_h, 2, 0, 0, p0, 1, 0);
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + VPG - 128, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL3b draw reads across two mappings of storage apart", ops_h, 2, 0, 0, p0, 1, 0);
+        w = csp_pre(ops_h, &pg, &tt); w = lp_draw(w, 1); csp_tail(w, v1a + 2 * VPG - 128, 256, &pc, 0, &pg);
+        checked += csp_case("AL3c dispatch writes across a mapping into an unmapped page", ops_h, 2, 0, 2, p12, 1, 0);
+        // AL4: V2[2, 3] <- P[2, 3] in one request, then V2[3] <- P[0]: the draw reads P[0] through V2[3], judged by its new backing
+        totk_mapping_request m4[2] = {{pp_, 2 * VPG, 2 * VPG, 2 * VPG, 1, 0}, {pp_, 0, 3 * VPG, VPG, 1, 0}};
+        if (!totk_vpool_map(&v2, 1, &m4[0]) || !totk_vpool_map(&v2, 1, &m4[1])) MDIE("cs-hoist probe: virtual mappings");
+        w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, v2a + 3 * VPG, 256); w = lp_draw(w, 1); csp_tail(w, v1a, 256, &pc, 0, &pg);
+        checked += csp_case("AL4 draw reads through a remapped page what the dispatch writes", ops_h, 2, 0, 3, p0, 1, 0);
+        /* AL5: the colour target's storage is P[0] by P's own address; the dispatch samples a texture whose storage is V1[0] (P[0]
+           too): refused (its storage buffer is on u0) */
+        tex_t tv = tt, sv = sx; tv.serial = 0xffffffdd; tv.mem = vp.mem; tv.L.size = 256; sv.serial = 0xffffffde; sv.mem = v1.mem; sv.L.size = 64;
+        serial_put(tv.serial, tex); serial_put(sv.serial, stex); mtl_reg_tex(T_SY + 1, &sv, NULL);
+        w = csp_pre(ops_h, &pg, &tv); w = lp_draw(w, 1); w = csp_tex(w, 5, 0, T_SY + 1); csp_tail(w, ua + 12288, 256, pct, 0, &pg);
+        checked += csp_case("AL5 dispatch samples through a virtual pool the colour target's storage", ops_h, 2, 0, 2, s0, 0, 0);
+        mtl_reg_tex(T_SY + 1, NULL, NULL); serial_del(tv.serial); serial_del(sv.serial);
+        for (int k = 0; k < 2; k++) { pool_t *v = k ? &v2 : &v1; nvn_dirty_remove_range(v->mem); mtl_pool_del(v->mem); totk_vpool_fini(v); }
+        totk_vpool_fini(&vp); free(vps);
+    }
     for (int i = T_TT; i <= T_SY; i++) mtl_reg_tex(i, NULL, NULL);
     for (int i = 0; i < NP; i++) serial_del(pp[i].serial);
     for (int i = 0; i < 4; i++) serial_del((uint64_t[]){dt.serial, tz.serial, sx.serial, sy.serial}[i]);

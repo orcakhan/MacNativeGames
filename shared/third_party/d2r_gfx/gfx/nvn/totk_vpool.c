@@ -26,6 +26,68 @@ int totk_vpool_aliases_used(void) { return __atomic_load_n(&g_aliases_used, __AT
 static uint64_t host_page(void) { return (uint64_t)getpagesize(); }
 static uint64_t round_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
+/* The virtual pools (their host spans) and the mappings in them: virtual range -> CPU address of the physical backing,
+   sorted by address and disjoint (a request first cuts its range out of older ones; an unmapped range has no entry).
+   Diagnostics use it (a watch on a GPU address protects the pages the CPU actually touches: the game reads / writes physical
+   pools through their own view), and the compute-dispatch hoist judges memory by the backing (totk_vpool_canon). g_vmap_lost:
+   a table was full, so neither can be trusted any more; g_map_gen counts the changes (under g_map_mu). */
+static totk_vpool_span g_vpools[TOTK_VPOOL_MAX_POOLS]; static int g_nvpools;
+static totk_vpool_ent g_vmap[TOTK_VPOOL_MAX_MAPS]; static int g_nvmap, g_vmap_lost;
+static uint64_t g_map_gen;
+static void vmap_lose(const char *what) { if (!g_vmap_lost) LOG("【红】vpool: %s table full; ranges in virtual pools are no longer told apart by their backing", what); g_vmap_lost = 1; }
+// Cuts [lo, hi) out of the mappings (0: no room to split an entry around it)
+static int vmap_cut(uintptr_t lo, uintptr_t hi) {
+    for (int i = 0; i < g_nvmap; i++) {
+        totk_vpool_ent *e = &g_vmap[i]; uintptr_t elo = e->va, ehi = e->va + e->size;
+        if (ehi <= lo || elo >= hi) continue;
+        if (elo < lo && ehi > hi) {   // inside one entry: it splits around it
+            if (g_nvmap >= TOTK_VPOOL_MAX_MAPS) return 0;
+            memmove(&g_vmap[i + 2], &g_vmap[i + 1], (size_t)(g_nvmap - i - 1) * sizeof *e); g_nvmap++;
+            g_vmap[i + 1] = (totk_vpool_ent){hi, e->cpu + (hi - elo), ehi - hi}; e->size = lo - elo; return 1;
+        }
+        if (elo < lo) { e->size = lo - elo; continue; }
+        if (ehi > hi) { e->cpu += hi - elo; e->va = hi; e->size = ehi - hi; continue; }
+        memmove(&g_vmap[i], &g_vmap[i + 1], (size_t)(g_nvmap - i - 1) * sizeof *e); g_nvmap--; i--;
+    }
+    return 1;
+}
+// [va, va + size) now shows cpu (0: unmapped)
+static void vmap_note(uintptr_t va, uint64_t size, uintptr_t cpu) {
+    __atomic_add_fetch(&g_map_gen, 1, __ATOMIC_RELEASE);
+    if (!vmap_cut(va, va + size)) { vmap_lose("mapping"); return; }
+    if (!cpu) return;
+    if (g_nvmap >= TOTK_VPOOL_MAX_MAPS) { vmap_lose("mapping"); return; }
+    int i = 0; while (i < g_nvmap && g_vmap[i].va < va) i++;
+    memmove(&g_vmap[i + 1], &g_vmap[i], (size_t)(g_nvmap - i) * sizeof *g_vmap); g_nvmap++;
+    g_vmap[i] = (totk_vpool_ent){va, cpu, size};
+}
+int totk_vpool_backing(uintptr_t va, uint64_t len, uintptr_t *cpu) {
+    pthread_mutex_lock(&g_map_mu); int r = 0;
+    for (int i = 0; i < g_nvmap; i++) { const totk_vpool_ent *e = &g_vmap[i]; if (e->cpu && va >= e->va && va + len <= e->va + e->size) { *cpu = e->cpu + (va - e->va); r = 1; break; } }
+    pthread_mutex_unlock(&g_map_mu); return r;
+}
+void totk_vpool_view_sync(totk_vpool_view *v) {
+    if (__atomic_load_n(&g_map_gen, __ATOMIC_ACQUIRE) == v->gen) return;
+    pthread_mutex_lock(&g_map_mu);
+    v->gen = g_map_gen; v->lost = g_vmap_lost; v->npool = g_nvpools; v->nmap = g_nvmap;
+    memcpy(v->pool, g_vpools, (size_t)g_nvpools * sizeof *g_vpools); memcpy(v->map, g_vmap, (size_t)g_nvmap * sizeof *g_vmap);
+    pthread_mutex_unlock(&g_map_mu);
+}
+int totk_vpool_canon(const totk_vpool_view *v, uintptr_t va, uint64_t len, uintptr_t *canon) {
+    if (!len || va + len < va) return 0;
+    uintptr_t end = va + len; const totk_vpool_span *in = NULL;
+    for (int i = 0; i < v->npool; i++) if (va < v->pool[i].hi && v->pool[i].lo < end) { in = &v->pool[i]; break; }
+    if (!in && !v->lost) { *canon = va; return 1; }   // no virtual pool: the address is the storage's own
+    if (!in || v->lost || va < in->lo || end > in->hi) return 0;
+    int lo = 0, hi = v->nmap; while (lo < hi) { int m = (lo + hi) / 2; if (v->map[m].va <= va) lo = m + 1; else hi = m; }
+    if (!lo) return 0;
+    const totk_vpool_ent *e = &v->map[lo - 1], *last = v->map + v->nmap;
+    if (va >= e->va + e->size) return 0;   // an unmapped hole
+    *canon = e->cpu + (va - e->va);
+    for (; e->va + e->size < end; e++) { const totk_vpool_ent *f = e + 1;   // across the next mapping when its storage follows on
+        if (f == last || f->va != e->va + e->size || f->cpu != e->cpu + e->size) return 0; }
+    return 1;
+}
 static uint8_t *vm_fresh(uint64_t span) {
     mach_vm_address_t a = 0;
     kern_return_t kr = mach_vm_allocate(mach_task_self(), &a, span, VM_FLAGS_ANYWHERE);
@@ -48,11 +110,25 @@ int totk_vpool_init(pool_t *o) {
     o->host = vm_fresh(o->span);
     if (!o->host) return 0;
     o->mem = o->host;
+    if (virt) {
+        pthread_mutex_lock(&g_map_mu);
+        if (g_nvpools < TOTK_VPOOL_MAX_POOLS) g_vpools[g_nvpools++] = (totk_vpool_span){(uintptr_t)o->host, (uintptr_t)o->host + o->span}; else vmap_lose("virtual pool");
+        __atomic_add_fetch(&g_map_gen, 1, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&g_map_mu);
+    }
     return 1;
 }
 
 int totk_vpool_fini(pool_t *o) {
     if (!o->host) return 0;
+    if (o->flags & F_VIRTUAL) {   // its span and its mappings go before the address range can be handed out again
+        pthread_mutex_lock(&g_map_mu);
+        uintptr_t lo = (uintptr_t)o->host, hi = lo + o->span;
+        for (int i = 0; i < g_nvpools; i++) if (g_vpools[i].lo == lo) { g_vpools[i] = g_vpools[--g_nvpools]; break; }
+        if (!vmap_cut(lo, hi)) vmap_lose("mapping");   // entries never cross a pool's border: nothing splits
+        __atomic_add_fetch(&g_map_gen, 1, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&g_map_mu);
+    }
     mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)(uintptr_t)o->host, o->span);
     o->host = NULL; o->mem = o->game_mem; o->span = 0;
     return 1;
@@ -71,19 +147,6 @@ static int check_request(const pool_t *v, const totk_mapping_request *r, int i) 
     return 1;
 }
 
-// TOTK diagnostics: mapping table (virtual range -> CPU address of the physical backing) so a watch on a GPU
-// address can protect the pages the CPU actually touches (the game reads/writes physical pools through their own view).
-typedef struct { uintptr_t va, cpu; uint64_t size; } vmap_ent;
-static vmap_ent g_vmap[512]; static int g_nvmap;
-static void vmap_note(uintptr_t va, uint64_t size, uintptr_t cpu) {
-    for (int i = 0; i < g_nvmap; i++) if (g_vmap[i].va == va) { g_vmap[i] = (vmap_ent){va, cpu, size}; return; }
-    if (g_nvmap < 512) g_vmap[g_nvmap++] = (vmap_ent){va, cpu, size};
-}
-int totk_vpool_backing(uintptr_t va, uint64_t len, uintptr_t *cpu) {
-    pthread_mutex_lock(&g_map_mu); int r = 0;
-    for (int i = 0; i < g_nvmap; i++) { const vmap_ent *e = &g_vmap[i]; if (e->cpu && va >= e->va && va + len <= e->va + e->size) { *cpu = e->cpu + (va - e->va); r = 1; break; } }
-    pthread_mutex_unlock(&g_map_mu); return r;
-}
 static int apply_request(pool_t *v, const totk_mapping_request *r) {
     mach_vm_address_t dst = (mach_vm_address_t)(uintptr_t)(v->mem + r->virtual_offset);
     kern_return_t kr;

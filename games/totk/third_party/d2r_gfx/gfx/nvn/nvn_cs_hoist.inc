@@ -13,9 +13,11 @@
    an indirect grid, a binding with no listed range, a uniform or storage buffer over an attachment's storage, a sampled
    colour attachment of the pass, or the pass's depth sampled after a draw of the stretch wrote depth or stencil.
    Not while another mechanism replays or rewrites these commands (stereo eyes, world freeze, pass fusion and deferral, cube
-   groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, past the cursor's 8 return addresses, or once
-   virtual-pool aliases exist (totk_vpool_aliases_used: address ranges compared here may then name the same storage). A
+   groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, or past the cursor's 8 return addresses. A
    dispatch already run ahead and not yet met by the replay (a later draw scanned again with no pass opened) stops the scan.
+   Virtual-pool aliases (one physical page under several addresses): every range is judged by the address of the storage
+   behind it (totk_vpool_canon, on a copy of the mappings taken once per scan); a range that cannot be (an unmapped hole of a
+   virtual pool, mappings whose storage does not follow on) cannot be listed, as an unknown extent.
    TOTK_CS_HOIST=1 on (off by default for now). */
 static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
@@ -42,16 +44,32 @@ static int csh_take(const uint8_t *op) {
     return 0;
 }
 typedef struct { uint64_t lo, hi; } csh_rng;
+static totk_vpool_view g_csh_view;   // the virtual pools' mappings, as csh_try's scan found them
+// Adds [a, a + sz) as the range of the storage behind it (the physical backing of a virtual pool's address)
 static int csh_add(csh_rng *r, int *n, uint64_t a, uint64_t sz) {
     if (!a) return 1;   // not bound
-    if (!sz || sz > UINT64_MAX - a || *n >= CSH_RN) return 0;   // an unknown extent
-    r[(*n)++] = (csh_rng){a, a + sz}; return 1;
+    uintptr_t c;
+    if (!sz || sz > UINT64_MAX - a || *n >= CSH_RN || !totk_vpool_canon(&g_csh_view, (uintptr_t)a, sz, &c)) return 0;   // an unknown extent or storage
+    r[(*n)++] = (csh_rng){c, c + sz}; return 1;
 }
 static int csh_hit(const csh_rng *a, int na, const csh_rng *b, int nb) { for (int i = 0; i < na; i++) for (int j = 0; j < nb; j++) if (a[i].lo < b[j].hi && b[j].lo < a[i].hi) return 1; return 0; }
 // The texture a handle names (a copy taken under the registry lock: the game thread grows g_treg); 0 when it names none registered
 static int csh_tex(uint64_t h, tex_t *t) {
     registry_lock(); const treg_t *r = bound_tex(h); int ok = r && r->t.serial; if (ok) *t = r->t; registry_unlock();
     return ok;
+}
+/* Whether texture a may share storage with b (as defer_tex_alias, by the storage behind the addresses): the same texture, or
+   storage that overlaps or cannot be told apart; with an unknown size, the same pool or either in a virtual pool */
+static int csh_tex_alias(const tex_t *a, const tex_t *b) {
+    if (!a || !b) return 0;
+    if (a->serial == b->serial) return 1;
+    if (!a->mem || !b->mem) return 0;
+    csh_rng ra[1], rb[1]; int na = 0, nb = 0;
+    if (!a->L.size || !b->L.size) {
+        uintptr_t ca, cb;
+        return a->pool == b->pool || !totk_vpool_canon(&g_csh_view, (uintptr_t)a->mem, 1, &ca) || ca != (uintptr_t)a->mem
+            || !totk_vpool_canon(&g_csh_view, (uintptr_t)b->mem, 1, &cb) || cb != (uintptr_t)b->mem; }
+    return !csh_add(ra, &na, (uint64_t)(uintptr_t)a->mem, a->L.size) || !csh_add(rb, &nb, (uint64_t)(uintptr_t)b->mem, b->L.size) || csh_hit(ra, na, rb, nb);
 }
 // Whether [addr, addr + size) meets the storage of an attachment of the pass (1 too when either extent is unknown)
 static int csh_attachment_hit(uint64_t addr, uint64_t size) {
@@ -106,8 +124,10 @@ static int csh_cs(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw, int *
             case NVN_RB_TEX: { if (b->reg >= 128) return 0;
                 uint64_t h = S.tex[5][b->reg]; if (!(h & 0xfffff)) break;
                 tex_t t; if (!csh_tex(h, &t)) return 0;
-                if (R.has_rt) { for (int k = 0; k < R.rt.n && k < 8; k++) if (defer_tex_alias(&t, R.rt.color[k])) return 0;   // it would miss what the draws before it drew
-                                if (defer_tex_alias(&t, R.rt.depth)) *depth = 1; }
+                if (R.has_rt) { csh_rng s[1]; int ns = 0;
+                                if (t.mem && t.L.size && !csh_add(s, &ns, (uint64_t)(uintptr_t)t.mem, t.L.size)) return 0;   // its storage cannot be told
+                                for (int k = 0; k < R.rt.n && k < 8; k++) if (csh_tex_alias(&t, R.rt.color[k])) return 0;   // it would miss what the draws before it drew
+                                if (csh_tex_alias(&t, R.rt.depth)) *depth = 1; }
                 break; }
             case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SUPPORT: case NVN_RB_C1: case NVN_RB_DRV0: case NVN_RB_DRV2: break;
             default: return 0;   // TEXP, SAMPP, SBUFU, GMEM, GMEML, IMG, TBUF, GEO
@@ -159,9 +179,10 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
     if (g_csh.sub != g_sub_serial) { g_csh.n = 0; g_csh.sub = g_sub_serial; }   // moves of an earlier submission the replay never met
     int clear = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) clear |= R.clear_c[i];   // the pass's load action comes before anything a moved dispatch does
     if (g_eye_pass || g_frz_state || g_fz.active || g_fz_checking || g_defer_replaying || g_defer_nact || g_cg.replaying || g_lay.active || tbdr_on() || g_geo_ras.pr
-        || clear || !g_exec_next || g_ret_n > 8 || totk_vpool_aliases_used()) { g_csh.stop[9]++; return; }   // virtual aliases: guest address ranges no longer tell storage apart
+        || clear || !g_exec_next || g_ret_n > 8) { g_csh.stop[9]++; return; }
     if (!csh_ahead()) { g_csh.stop[8]++; return; }
     g_csh.scans++;
+    totk_vpool_view_sync(&g_csh_view);   // csh_add judges every range by the storage behind it
     static csh_rng rd[CSH_RN], wr[CSH_RN]; int nrd = 0;
     if (!csh_draw_reads(pr0, dw0, di0, rd, &nrd)) { g_csh.stop[0]++; return; }
     static typeof(S) Ssave; memcpy(&Ssave, &S, sizeof S); typeof(R) Rsave = R; int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty, moved = 0;
