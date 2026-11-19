@@ -18793,6 +18793,8 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
 }
 #endif
 #include "nvn_geometry_rt.inc"   // geometry stages as compute: geo_draw, g_geo_ras
+static void dispatch(const p_dispatch *dp);
+#include "nvn_cs_hoist.inc"   // compute dispatches run ahead of the pass they would split: csh_try, csh_take
 /* Carry native camera metadata along this draw's real sampled resources and
    attachments. Material/probe textures carry no projection; conflicting views
    are rejected by zeldaVR instead of choosing a nearby camera. */
@@ -19385,6 +19387,7 @@ frz_plain:;
         if (cg_take(pr, dw, di)) return;
         if (g_cg.ng) cg_flush();   // every other draw runs after the pending groups (order, and reads of their cubes)
     }
+    if (!g_enc && csh_on()) csh_try(pr, dw, di);   // TOTK_CS_HOIST: dispatches between this pass's draws run before it opens
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     if (g_enc && g_lay.active && !lay_draw_ok(pr, dw, di)) {   // TOTK: this draw cannot write its layer: end the layered pass, draw in a plain one
         PD("L %llu 分层通道内的绘制不能写层号，在此切开", g_stat_pass); rp_end(); g_lay.refuse = 1; g_lay.refused++; }
@@ -21155,7 +21158,7 @@ static void mtl_exec_list(const uint8_t *p) {
             case OP_COPY_T2B: copy_t2b(a); break;
             case OP_COPY_T2T: copy_t2t(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
-            case OP_DISPATCH: dispatch(a); break;
+            case OP_DISPATCH: if (!csh_take(p)) dispatch(a); break;   // csh_take: already run ahead of the pass (csh_try)
             case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
                                     S.tex_base = tp ? nvn_tex_pool_base(tp) : 0; S.tex_pool_n = tp ? S.tex_base + tp->n : 0; args_dirty_all(); break; }
             case OP_SET_SAMP_POOL: { const dpool_t *sp = ((const p_set_pool *)a)->pool; extern int nvn_samp_pool_base(const void *pool); S.samp_base = sp ? nvn_samp_pool_base(sp) : 0; S.samp_pool_n = sp ? sp->n : 0; args_dirty_all(); break; }
@@ -24968,6 +24971,99 @@ int mtl_probe_layer_merge(void) {
     for (int i = 0; i < 4; i++) defer_obj_release(rb[i]);
     for (id o in @[cube, arr, arr2]) defer_obj_release(o);
     return checked + 5 * 4;
+}
+
+/* TOTK probe: compute dispatches between the draws of a pass run ahead of it (TOTK_CS_HOIST, nvn_cs_hoist.inc), through the
+   production replay (mtl_exec). A: draw (left half), an independent dispatch (s0[i] += 1), draw (right half): one pass, the
+   dispatch moved once and skipped where the replay meets it (s0[0] == 1), both draws' pixels. G: a moved pointer left from an
+   earlier submission (the scan off for that list) must not skip the same command of a new one (s0 rises by exactly 1). H: a
+   first draw with an empty scissor is skipped before the scan, then a dispatch and a draw: the dispatch runs once, nothing
+   moved. Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
+   TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
+static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
+static uint8_t *csp_ssbo(uint8_t *w, int st, int idx, uint64_t a, uint64_t n) { p_bind_buf b = {st, idx, a, n}; return lp_rec(w, OP_BIND_SSBO, &b, sizeof b); }
+static uint8_t *csp_dispatch(uint8_t *w) { p_dispatch d = {1, 1, 1, 0, 0}; return lp_rec(w, OP_DISPATCH, &d, sizeof d); }
+// Replays one list in the open submission and checks the passes it opened and the dispatches moved ahead of them
+static void csp_run(const char *name, const uint8_t *ops, uint64_t passes, uint64_t moved) {
+    uint64_t p0 = g_stat_pass, m0 = g_csh.moved;
+    mtl_exec(ops); rp_end();
+    uint64_t dp = g_stat_pass - p0, dm = g_csh.moved - m0;
+    MLOG("cs-hoist probe %s: %llu passes, %llu dispatches moved ahead", name, (unsigned long long)dp, (unsigned long long)dm);
+    if (dp != passes || dm != moved) MDIE("cs-hoist probe %s: %llu passes / %llu moved, expected %llu / %llu", name, (unsigned long long)dp, (unsigned long long)dm, (unsigned long long)passes, (unsigned long long)moved);
+}
+int mtl_probe_cs_hoist(void) {
+    setenv("TOTK_CS_HOIST", "1", 1); mtl_init();
+    const char *ne = getenv("TOTK_PROBE_NEGATIVE"); int neg = ne ? atoi(ne) : 0, checked = 0; g_csh_probe_neg = neg;
+    if (!csh_on()) MDIE("cs-hoist probe: TOTK_CS_HOIST is off");
+    NSString *vsrc = @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 m_0 [[user(locn0)]];\n    float4 gl_Position [[position]];\n};\n\n"
+        "vertex main0_out main0(uint gl_VertexIndex [[vertex_id]])\n{\n    main0_out out = {};\n    uint k = gl_VertexIndex / 3u, i = gl_VertexIndex % 3u;\n"
+        "    out.gl_Position = float4(float((i << 1u) & 2u) * 2.0 - 1.0, float(i & 2u) * 2.0 - 1.0, 0.0, 1.0);\n"
+        "    out.m_0 = float4(float(k + 1u) / 64.0, 0.25, 0.5, 1.0);\n    return out;\n}\n";
+    NSString *fsrc = @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 c [[color(0)]];\n};\n\nstruct main0_in\n{\n    float4 m_0 [[user(locn0)]];\n};\n\n"
+        "fragment main0_out main0(main0_in in [[stage_in]])\n{\n    main0_out out = {};\n    out.c = in.m_0;\n    return out;\n}\n";
+    NSString *csrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct _23 { uint _m0[1]; };\nstruct spvDescriptorSetBuffer0 { device _23* cp_s0 [[id(0)]]; };\n"
+        "kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 g [[thread_position_in_grid]])\n{\n    (*spvDescriptorSet0.cp_s0)._m0[g.x] += 1u;\n}\n";
+    NSError *e = nil; id<MTLLibrary> vl = totk_msl_library(vsrc, &e), fl = vl ? totk_msl_library(fsrc, &e) : nil, cl = fl ? totk_msl_library(csrc, &e) : nil;
+    if (!vl || !fl || !cl) MDIE("cs-hoist probe shaders: %s", e.localizedDescription.UTF8String);
+    NvShader *vs = [NvShader new], *fs = [NvShader new], *cs = [NvShader new];
+    vs->fn = [vl newFunctionWithName:@"main0"]; vs->src = vsrc; vs->stage = 0; strcpy(vs->key, "probe-cs-hoist-vs");
+    fs->fn = [fl newFunctionWithName:@"main0"]; fs->src = fsrc; fs->stage = 1; strcpy(fs->key, "probe-cs-hoist-fs");
+    cs->fn = [cl newFunctionWithName:@"main0"]; cs->src = csrc; cs->stage = 5; strcpy(cs->key, "probe-cs-hoist-cs");
+    cs->rf.nb = 1; cs->rf.b[0].kind = NVN_RB_SBUFP; cs->rf.b[0].aid = 0; cs->rf.b[0].reg = 0; cs->rf.b[0].rw = 1;
+    cs->rf.tg[0] = 64; cs->rf.tg[1] = 1; cs->rf.tg[2] = 1;
+    cs->ae = [cs->fn newArgumentEncoderWithBufferIndex:0]; cs->arg_len = cs->ae.encodedLength;
+    NvProg *gpr = [NvProg new], *cpr = [NvProg new]; gpr->sh[0] = vs; gpr->sh[1] = fs; cpr->sh[5] = cs;
+    prog_t pg, pc; memset(&pg, 0, sizeof pg); memset(&pc, 0, sizeof pc); pg.serial = 0xffffffc0; pc.serial = 0xffffffc1; serial_put(pg.serial, gpr); serial_put(pc.serial, cpr);
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> tex = [g_dev newTextureWithDescriptor:d]; if (!tex) MDIE("cs-hoist probe texture"); res_add(tex);
+    tex_t tt; memset(&tt, 0, sizeof tt); tt.serial = 0xffffffc2; tt.d.format = 0x25; tt.d.width = tt.d.height = 8; tt.d.depth = 1; tt.d.levels = 1; tt.d.target = 1;
+    serial_put(tt.serial, tex);
+    const size_t SZ = 16384; uint32_t *s0 = NULL;
+    if (posix_memalign((void **)&s0, 16384, SZ) || !s0) MDIE("cs-hoist probe memory");
+    memset(s0, 0, SZ); mtl_pool_add(s0, SZ); const uint64_t sa = (uint64_t)(uintptr_t)s0;
+    id<MTLBuffer> rb = probe_buf(8 * 8 * 4);
+    op_hdr end = {OP_END, 8};
+    static uint8_t ops[4096], ops_h[4096]; uint8_t *w; const uint8_t *dop;
+    // A: draw, dispatch, draw in one pass
+    w = lp_prog(ops, &pg); w = csp_rt(w, &tt); w = lp_sc(w, 0, 0, 4, 8); w = lp_draw(w, 1);
+    w = csp_ssbo(w, 5, 0, sa, SZ); w = lp_prog(w, &pc); dop = w; w = csp_dispatch(w); w = lp_prog(w, &pg); w = lp_sc(w, 4, 0, 4, 8); w = lp_draw(w, 2); lp_end(w);
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);   // replay state and an open submission
+    {   // the target starts transparent black
+        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = tex;
+        rp.colorAttachments[0].loadAction = MTLLoadActionClear; rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0); rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        ser_gate(); enc_r_end(enc_r_begin(rp));
+    }
+    csp_run("A draw, dispatch, draw", ops, neg == 1 ? 2 : 1, 1); checked += 2;   // negative 1: the dispatch also runs where the replay meets it, ending the pass; s0 must catch it
+    enc_b_copy_texture_buffer(blit(), tex, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(8, 8, 1), rb, 0, 8 * 4, 8 * 8 * 4);
+    mtl_sub_commit(); mtl_finish();
+    if (s0[0] != 1) MDIE("cs-hoist probe A: s0[0] = %u after the submission, expected 1 (the moved dispatch ran %s)", s0[0], s0[0] ? "again where the replay met it" : "nowhere");
+    checked++;
+    for (int p = 0; p < 64; p++) {
+        uint32_t want = lp_px(p % 8 < 4 ? 1 : 2); const uint8_t *got = (const uint8_t *)rb.contents + p * 4;
+        for (int c = 0; c < 4; c++) { int wc = (int)(want >> (8 * c) & 255);
+            if (abs((int)got[c] - wc) > 1) MDIE("cs-hoist probe A: pixel %d,%d channel %d = %u, expected %d", p % 8, p / 8, c, got[c], wc);
+            checked++; }
+    }
+    // G: list A again in a new submission, with A's dispatch left as moved by the submission before and the scan off
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+    g_csh.op[0] = dop; g_csh.n = 1; g_csh.sub = g_sub_serial - 1; g_csh_probe_neg = 2;
+    csp_run("G stale moved command", ops, 2, 0); checked += 2;
+    mtl_sub_commit(); mtl_finish(); g_csh_probe_neg = neg;
+    if (s0[0] != 2) MDIE("cs-hoist probe G: s0[0] = %u, expected 2 (a move of an earlier submission skipped this one's dispatch)", s0[0]);
+    checked++;
+    // H: a first draw with an empty scissor (skipped before the scan), then a dispatch and the draw that opens the pass
+    w = lp_prog(ops_h, &pg); w = csp_rt(w, &tt); w = lp_sc(w, 0, 0, 0, 0); w = lp_draw(w, 3); w = lp_sc(w, 0, 0, 8, 8);
+    w = csp_ssbo(w, 5, 0, sa, SZ); w = lp_prog(w, &pc); w = csp_dispatch(w); w = lp_prog(w, &pg); w = lp_draw(w, 4); lp_end(w);
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+    csp_run("H empty first draw", ops_h, 1, 0); checked += 2;
+    mtl_sub_commit(); mtl_finish();
+    if (s0[0] != 3) MDIE("cs-hoist probe H: s0[0] = %u, expected 3", s0[0]);
+    checked++;
+    memset(&R, 0, sizeof R); state_reset(); g_csh_probe_neg = 0;
+    for (int i = 0; i < 3; i++) serial_del((uint64_t[]){pg.serial, pc.serial, tt.serial}[i]);
+    mtl_pool_del(s0); free(s0); defer_obj_release(rb); defer_obj_release(tex);
+    return checked;
 }
 
 #include "nvn_integer_blend_probe.h"

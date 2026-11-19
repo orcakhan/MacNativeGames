@@ -72,6 +72,7 @@ int mtl_probe_drv_c0(void);
 int mtl_probe_dispatch_chain(void);
 int mtl_probe_copy_alias(void);
 int mtl_probe_layer_merge(void);
+int mtl_probe_cs_hoist(void);
 int mtl_probe_cube_merge(void);
 void mtl_cube_merge_stats(uint64_t v[4]);
 int mtl_probe_winding(void);
