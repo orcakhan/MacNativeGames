@@ -18,7 +18,7 @@
    Virtual-pool aliases (one physical page under several addresses): every range is judged by the address of the storage
    behind it (totk_vpool_canon, on a copy of the mappings taken once per scan); a range that cannot be (an unmapped hole of a
    virtual pool, mappings whose storage does not follow on) cannot be listed, as an unknown extent.
-   TOTK_CS_HOIST=1 on (off by default for now). */
+   On by default except in Ocarina of Time (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, =1 on. */
 static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
 /* op: the dispatch commands run ahead and not yet met by the replay, in submission sub; moved: dispatches run ahead; scans:
@@ -32,10 +32,18 @@ enum { CSH_STOPS = 12 };
 static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[CSH_STOPS]; } g_csh;
 static const char *const csh_stop_name[CSH_STOPS] = {"first_draw", "later_draw", "dispatch_refused", "memory_conflict", "dispatch_limit", "other_op", "bad_cursor",
     "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end"};
+/* On by default in BotW and TOTK (2026-11-19: BotW GPU p50 -1.4% in a balanced off/on/on/off run, frame time and
+   submit cost unchanged, same picture); off in Ocarina of Time, whose barrier mode, mesh draws, indirect dispatches and
+   VR replay have not been validated with it. TOTK_CS_HOIST=0 or =1 overrides. */
+#ifdef GAME_OOT
+enum { CSH_DEFAULT = 0 };
+#else
+enum { CSH_DEFAULT = 1 };
+#endif
 static _Atomic int g_csh_on = -1;   // -1 until TOTK_CS_HOIST is read; "flag cs_hoist <0|1>" switches it while the game runs (csh_set)
 static int csh_on(void) {
     int m = atomic_load_explicit(&g_csh_on, memory_order_relaxed);
-    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e && atoi(e) == 1; int was = -1; if (atomic_compare_exchange_strong(&g_csh_on, &was, m) && m) MLOG("TOTK_CS_HOIST=1: compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); m = atomic_load(&g_csh_on); }
+    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e ? atoi(e) == 1 : CSH_DEFAULT; int was = -1; if (atomic_compare_exchange_strong(&g_csh_on, &was, m) && m) MLOG("cs-hoist on (TOTK_CS_HOIST=0 turns it off): compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); m = atomic_load(&g_csh_on); }
     return m;
 }
 /* "flag cs_hoist <0|1>" (TOTK_INPUT_FILE): the same frame with and without the hoist in one session (image comparison).

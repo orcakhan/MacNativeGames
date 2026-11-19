@@ -566,6 +566,39 @@ stopped voice's last samples (Ryujinx.Audio `CommandGenerator.GenerateVoice`: `V
 - A run that ends in Game Over has no world sound (digital zero): the first runs of this check, started from the legs
   save on a build without the legs cure, were silent for that reason.
 
+## Compute dispatches run ahead of the pass (2026-11-19)
+
+A compute dispatch between the draws of a render pass used to end the pass, and the next draw opened another one on the
+same targets. When a draw opens a pass, the replay now looks at the commands ahead of it; each dispatch that can run
+before the pass without changing anything the draws before it read runs at once, and the replay skips it later
+(`nvn_cs_hoist.inc`, a port of seedds/nxnative's `cs_hoist_try`, MIT). The rules are general memory checks, not per game:
+what the dispatch writes against what the earlier draws read (uniform, vertex, index, sampled textures, judged by the
+storage behind virtual-pool aliases), no sampled colour target of the pass, no sampled depth after a draw wrote it, and
+the scan stops at barriers with bits, uniform updates, render conditions and any command that is not plain state.
+`make -C games/totk probe-gpu-cs-hoist` checks the rules (413 checks, with negative controls).
+
+- On by default in Breath of the Wild and Tears of the Kingdom; off in Ocarina of Time (not validated there).
+  `TOTK_CS_HOIST=0` turns it off, `=1` on; `flag cs_hoist <0|1>` in `TOTK_INPUT_FILE` switches it while the game runs.
+- The log prints a `[cs-hoist]` line with the dispatches moved and why each scan stopped; the pass dump marks each moved
+  dispatch with an `H` line.
+
+Measured on an M5 Pro, windowed, uncapped frame rate, Great Plateau save with the camera still (2.5 min warm-up, 60 s of
+300-frame windows per run, 2 min between runs, off / on / on / off):
+
+| Run | Frame p50 | GPU p50 | Passes split by a dispatch |
+|---|---|---|---|
+| off 1 | 7.95 ms | 5.33 ms | 15 per frame |
+| on 1 | 7.92 ms | 5.26 ms | 11 per frame |
+| on 2 | 7.93 ms | 5.25 ms | 11 per frame |
+| off 2 | 7.99 ms | 5.33 ms | 16 per frame |
+
+GPU time falls by 0.075 ms per frame (1.4%); the frame time does not change, since this scene is bound by the CPU (the
+submit thread's cycles per frame did not change either). About 6-7 dispatches per frame move. Most of the remaining
+splits are dispatches that sample the depth a draw before them wrote, which must stay where they are. Pictures of
+consecutive frames in one session, switching with `flag cs_hoist`, differ no more with the switch than without it
+(RMSE 1.4% across the switch, 1.7% between groups with the same setting taken the same time apart, 0.1-0.2% between
+consecutive frames). Not measured yet: Tears of the Kingdom and iPad, where the GPU is the limit.
+
 ## Not tested and known issues
 
 - Sinking legs after a save loads, and the clear Bottomless Bog: the clear water is cured by #239 (merged), the legs are not (pull request #511, open; see "Long run and the sinking legs").
