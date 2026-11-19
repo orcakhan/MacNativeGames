@@ -6,8 +6,12 @@
    when it writes nothing the draws before it in that stretch read, and the replay skips it where it meets it (csh_take).
    As geo_run: the scan applies the state commands to S and R (state_op) and restores both after; a moved command counts only
    in the submission it was moved in (g_sub_serial), since the game records into the same command memory every frame.
-   This version lists only storage and uniform buffers: a draw with any other binding, a writable storage buffer, vertex,
-   index or indirect buffers, or a geometry stage, and a dispatch with any other binding or an indirect grid, stop the scan.
+   A draw's reads are its vertex and index buffers, uniform and read-only storage buffers and the storage of the textures it
+   samples, judged on the shader variant it will draw with (csh_draw_reads); a draw that may write memory (a writable storage
+   buffer, an image), reads memory not listed (descriptor pools, global memory, typed buffers, indirect records) or has a
+   geometry or tessellation stage stops the scan. A dispatch's storage buffers count as written (csh_cs); it is refused for
+   an indirect grid, a binding with no listed range, a uniform or storage buffer over an attachment's storage, a sampled
+   colour attachment of the pass, or the pass's depth sampled after a draw of the stretch wrote depth or stencil.
    Not while another mechanism replays or rewrites these commands (stereo eyes, world freeze, pass fusion and deferral, cube
    groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, past the cursor's 8 return addresses, or once
    virtual-pool aliases exist (totk_vpool_aliases_used: address ranges compared here may then name the same storage). A
@@ -39,27 +43,70 @@ static int csh_add(csh_rng *r, int *n, uint64_t a, uint64_t sz) {
     r[(*n)++] = (csh_rng){a, a + sz}; return 1;
 }
 static int csh_hit(const csh_rng *a, int na, const csh_rng *b, int nb) { for (int i = 0; i < na; i++) for (int j = 0; j < nb; j++) if (a[i].lo < b[j].hi && b[j].lo < a[i].hi) return 1; return 0; }
-// The memory a draw reads (its uniform and read-only storage buffers); 0 when it cannot be listed or the draw may write memory
+// The texture a handle names (a copy taken under the registry lock: the game thread grows g_treg); 0 when it names none registered
+static int csh_tex(uint64_t h, tex_t *t) {
+    registry_lock(); const treg_t *r = bound_tex(h); int ok = r && r->t.serial; if (ok) *t = r->t; registry_unlock();
+    return ok;
+}
+// Whether [addr, addr + size) meets the storage of an attachment of the pass (1 too when either extent is unknown)
+static int csh_attachment_hit(uint64_t addr, uint64_t size) {
+    if (!addr || !R.has_rt) return 0;
+    csh_rng a[1]; int na = 0; if (!csh_add(a, &na, addr, size)) return 1;
+    for (int k = 0; k < 9; k++) {
+        const tex_t *t = k == 8 ? R.rt.depth : k < R.rt.n ? R.rt.color[k] : NULL;
+        if (!t || !t->mem) continue;
+        csh_rng s[1]; int ns = 0;
+        if (!csh_add(s, &ns, (uint64_t)(uintptr_t)t->mem, t->L.size) || csh_hit(a, na, s, ns)) return 1;
+    }
+    return 0;
+}
+/* The memory a draw reads: vertex and index buffers, uniform and read-only storage buffers, the storage of the textures it
+   samples. 0 when it cannot be listed or the draw may write memory. Each stage's shader is the variant prog_fit gives the
+   draw under the state at its place (read-only, as prog_prediction_stages): a stage with no key keeps its shader, another
+   takes the variant of its signature (stage_sig), and one never drawn (prog_fit would translate it) cannot be judged. */
 static int csh_draw_reads(NvProg *pr, const p_draw *dw, const p_draw_idx *di, csh_rng *r, int *n) {
-    if (!pr || pr->missing || pr->geo || pr->sh[2] || pr->sh[3] || pr->sh[4] || di || (dw && (dw->ind || dw->prim == 0x40))) return 0;
-    for (int k = 0; k < 16; k++) if (S.vbuf[k].address) return 0;
-    for (int st = 0; st < 2; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+    if (!pr || pr->missing || pr->geo || pr->sh[2] || pr->sh[3] || pr->sh[4] || S.raster_discard) return 0;
+    if ((dw && (dw->ind || dw->prim == 0x40)) || (di && di->ind)) return 0;   // indirect: the record the GPU reads; mesh: g_mtk's stages
+    for (int k = 0; k < 16; k++) if (S.vbuf[k].size && !csh_add(r, n, S.vbuf[k].address, S.vbuf[k].size)) return 0;   // an empty stream reads nothing
+    if (di && !csh_add(r, n, di->ibuf, (uint64_t)(di->count > 0 ? di->count : 0) * 4 + 16)) return 0;   // as nxnative: the widest index type, and a margin
+    for (int st = 0; st < 2; st++) {
+        __unsafe_unretained NvShader *sh = pr->sh[st];
+        if (sh && pr->key[st]) { uint64_t sg = stage_sig(st); if (sg != pr->sig[st]) { sh = pr->alt[st][@(sg)]; if (!sh) return 0; } }
+        if (!sh) continue;
         if (sh->stage < 0 || sh->stage >= 6) return 0;
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
             switch (b->kind) {
                 case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16 || !csh_add(r, n, S.ubo[sh->stage][b->reg].addr, S.ubo[sh->stage][b->reg].size)) return 0; break;
                 case NVN_RB_SBUFP: if (b->rw || b->reg >= 16 || !csh_add(r, n, S.ssbo[sh->stage][b->reg].addr, S.ssbo[sh->stage][b->reg].size)) return 0; break;
-                default: return 0; } } }
+                case NVN_RB_TEX: { if (b->reg >= 128) return 0;
+                    uint64_t h = S.tex[sh->stage][b->reg]; if (!(h & 0xfffff)) break;   // nothing bound: the dummy texture
+                    tex_t t; if (!csh_tex(h, &t) || !csh_add(r, n, (uint64_t)(uintptr_t)t.mem, t.L.size)) return 0;
+                    break; }
+                case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SUPPORT: case NVN_RB_C1: case NVN_RB_DRV0: case NVN_RB_DRV2: break;   // no guest memory (cs_rangeless)
+                default: return 0;   // TEXP, SAMPP, SBUFU, GMEM, GMEML, IMG, TBUF, GEO: writes memory, or reads memory not listed here
+            } } }
     return 1;
 }
-// A dispatch at its place in the stream (S as it is there): the storage buffers it may write; 0 when it cannot run ahead
-static int csh_cs(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw) {
+/* A dispatch at its place in the stream (S as it is there): the storage buffers it may write, and whether it samples the
+   pass's depth (*depth = 1). 0 when it cannot run ahead: an indirect grid, a binding with no listed range, a uniform or
+   storage buffer over an attachment's storage (the draws before it write their attachments), or a sampled colour
+   attachment of the pass. */
+static int csh_cs(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw, int *depth) {
     if (!cs || cs->builtin || dp->indirect) return 0;
     for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
         switch (b->kind) {
-            case NVN_RB_SBUFP: if (b->reg >= 16 || !csh_add(w, nw, S.ssbo[5][b->reg].addr, S.ssbo[5][b->reg].size)) return 0; break;
-            case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16) return 0; break;   // reads: the draws before it write only their attachments (the check against attachment storage comes in Task 2)
-            default: return 0; } }
+            case NVN_RB_SBUFP: { if (b->reg >= 16) return 0; const p_bind_buf *u = &S.ssbo[5][b->reg];
+                if (csh_attachment_hit(u->addr, u->size) || !csh_add(w, nw, u->addr, u->size)) return 0; break; }
+            case NVN_RB_CBUF: case NVN_RB_UBOP: if (b->reg >= 16 || csh_attachment_hit(S.ubo[5][b->reg].addr, S.ubo[5][b->reg].size)) return 0; break;
+            case NVN_RB_TEX: { if (b->reg >= 128) return 0;
+                uint64_t h = S.tex[5][b->reg]; if (!(h & 0xfffff)) break;
+                tex_t t; if (!csh_tex(h, &t)) return 0;
+                if (R.has_rt) { for (int k = 0; k < R.rt.n && k < 8; k++) if (defer_tex_alias(&t, R.rt.color[k])) return 0;   // it would miss what the draws before it drew
+                                if (defer_tex_alias(&t, R.rt.depth)) *depth = 1; }
+                break; }
+            case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SUPPORT: case NVN_RB_C1: case NVN_RB_DRV0: case NVN_RB_DRV2: break;
+            default: return 0;   // TEXP, SAMPP, SBUFU, GMEM, GMEML, IMG, TBUF, GEO
+        } }
     return 1;
 }
 // Commands that end the scan before state_op is asked (it takes render conditions and SetRenderEnable as state)
@@ -71,7 +118,7 @@ static int csh_stop_op(uint32_t op, const void *a) {
 static NvProg *csh_prog(const prog_t *p) {
     if (!p) return nil;
     NvProg *pr = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
-    if (!pr) { g_prog_prefetch = 1; pr = prog_get(p); g_prog_prefetch = 0; }
+    if (!pr) { g_prog_prefetch = 1; pr = prog_get(p); g_prog_prefetch = 0; }   // a program met for the first time is predicted from here, before dispatch() / draw_inner ask for it with g_prog_for_draw; its stages come in the background (missing: refused)
     return pr;
 }
 /* Whether a dispatch comes before the first command that would stop csh_try's scan, by command codes only: most passes have
@@ -107,6 +154,7 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
     static csh_rng rd[CSH_RN], wr[CSH_RN]; int nrd = 0;
     if (!csh_draw_reads(pr0, dw0, di0, rd, &nrd)) { g_csh.stop[0]++; return; }
     static typeof(S) Ssave; memcpy(&Ssave, &S, sizeof S); typeof(R) Rsave = R; int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty, moved = 0;
+    int dwrote = R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st);   // a draw of the stretch writes depth or stencil (a compute view may read stencil)
     fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n}; memcpy(cur.ret, g_ret, (size_t)g_ret_n * sizeof *g_ret);
     for (int guard = 0; guard < CSH_OPS; guard++) {
         const uint8_t *q; op_hdr h; const void *a;
@@ -115,6 +163,7 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
         if (h.op == OP_BARRIER) continue;   // without bits
         if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) {
             if (!csh_draw_reads(csh_prog(S.prog), h.op == OP_DRAW ? a : NULL, h.op == OP_DRAW_IDX ? a : NULL, rd, &nrd)) { g_csh.stop[1]++; break; }
+            if (R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st)) dwrote = 1;
             continue; }
         if (h.op == OP_DISPATCH) {
             const p_dispatch *dp = a;
@@ -122,9 +171,10 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
             { int ran = 0; for (int i = 0; i < g_csh.n; i++) ran |= g_csh.op[i] == q;   // already run ahead by an earlier scan the replay has not passed yet
               if (ran) { g_csh.stop[2]++; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
             NvProg *cpr = csh_prog(S.cprog ? S.cprog : S.prog);   // as dispatch()
-            int nwr = 0;
-            if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr)) { g_csh.stop[2]++; break; }
-            if (csh_hit(wr, nwr, rd, nrd)) { g_csh.stop[3]++; break; }
+            int nwr = 0, depth = 0;
+            if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr, &depth)) { g_csh.stop[2]++; break; }
+            if (depth && dwrote) { g_csh.stop[7]++; break; }   // it would miss depth the draws before it wrote
+            if (csh_hit(wr, nwr, rd, nrd)) { g_csh.stop[3]++; break; }   // the draws before it read what it writes
             if (g_csh.n >= CSH_MAX) { g_csh.stop[4]++; break; }
             dispatch(dp); g_csh.op[g_csh.n++] = q; g_csh.moved++; moved++;
             continue; }

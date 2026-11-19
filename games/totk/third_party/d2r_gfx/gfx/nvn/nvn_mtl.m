@@ -24979,6 +24979,13 @@ int mtl_probe_layer_merge(void) {
    earlier submission (the scan off for that list) must not skip the same command of a new one (s0 rises by exactly 1). H: a
    first draw with an empty scissor is skipped before the scan, then a dispatch and a draw: the dispatch runs once, nothing
    moved. I: no render target, so every draw scans again: a dispatch already run ahead is not run again (s0 rises by 1).
+   The dependency rules, each list in a submission of its own (csp_case: passes, moves, the stop reason counted, s0's rise):
+   B a draw's uniform buffer that the dispatch writes / B2 on other memory; C the dispatch samples the depth target a draw
+   wrote / C2 nothing wrote it; D, D', D0 barriers with and without bits; E, E' an inline uniform update; F the compute
+   program missing; V an eye replay; W1 / W2 a draw that writes storage / reads a texture pool; X the dispatch samples the
+   colour target; Y an indirect dispatch; Z the dispatch's storage buffer over the colour target's storage; T / T2 sampled
+   texture storage elsewhere / in what the dispatch writes; R1, R1b, R2 vertex and index buffers; U the shader variant the
+   draw will use (prog_fit), not the one its program holds while the scan runs.
    Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
    TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
 static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
@@ -24991,6 +24998,35 @@ static void csp_run(const char *name, const uint8_t *ops, uint64_t passes, uint6
     uint64_t dp = g_stat_pass - p0, dm = g_csh.moved - m0;
     MLOG("cs-hoist probe %s: %llu passes, %llu dispatches moved ahead", name, (unsigned long long)dp, (unsigned long long)dm);
     if (dp != passes || dm != moved) MDIE("cs-hoist probe %s: %llu passes / %llu moved, expected %llu / %llu", name, (unsigned long long)dp, (unsigned long long)dm, (unsigned long long)passes, (unsigned long long)moved);
+}
+static uint8_t *csp_rt_d(uint8_t *w, const tex_t *t, const tex_t *d) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; r.depth = d; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
+static uint8_t *csp_ubo(uint8_t *w, int st, int idx, uint64_t a, uint64_t n) { p_bind_buf b = {st, idx, a, n}; return lp_rec(w, OP_BIND_UBO, &b, sizeof b); }
+static uint8_t *csp_tex(uint8_t *w, int st, int reg, uint64_t h) { p_bind_handles b; memset(&b, 0, sizeof b); b.stage = st; b.first = reg; b.n = 1; b.h[0] = h; return lp_rec(w, OP_BIND_TEX, &b, sizeof b); }
+static uint8_t *csp_ds(uint8_t *w, int dt, int dw) { ds_st s; memset(&s, 0, sizeof s); s.dt = (uint64_t)dt; s.dw = (uint64_t)dw; s.df = 8; p_bind_state b; memset(&b, 0, sizeof b); b.kind = 5; memcpy(b.bytes, &s, sizeof s); return lp_rec(w, OP_BIND_STATE, &b, sizeof b); }
+static uint8_t *csp_bar(uint8_t *w, uint32_t bits) { return lp_rec(w, OP_BARRIER, &bits, sizeof bits); }
+static uint8_t *csp_upd(uint8_t *w, uint64_t dst) { uint64_t u[4] = {dst, 16, 0x1111111111111111ull, 0x2222222222222222ull}; return lp_rec(w, OP_UPDATE_UB, u, sizeof u); }
+static uint8_t *csp_vbuf(uint8_t *w, uint64_t a, uint64_t n) { p_bind_vbuf b; memset(&b, 0, sizeof b); b.n = 1; b.r[0].address = a; b.r[0].size = n; return lp_rec(w, OP_BIND_VBUF, &b, sizeof b); }
+static uint8_t *csp_vattr(uint8_t *w, int n, uint32_t fmt) { p_bind_vattr b; memset(&b, 0, sizeof b); b.n = n; b.st[0] = fmt; return lp_rec(w, OP_BIND_VATTR, &b, sizeof b); }
+static uint8_t *csp_draw_idx(uint8_t *w, uint64_t ibuf) { p_draw_idx d = {.prim = 4, .itype = 2, .count = 3, .ibuf = ibuf}; return lp_rec(w, OP_DRAW_IDX, &d, sizeof d); }
+static uint8_t *csp_pre(uint8_t *w, const prog_t *pg, const tex_t *t) { w = lp_prog(w, pg); w = csp_rt(w, t); return lp_sc(w, 0, 0, 8, 8); }
+// The end of most lists: s0 bound to the compute stage, compute program pc, a dispatch (direct, or indirect from ind), program pg, a draw
+static uint8_t *csp_tail(uint8_t *w, uint64_t sa, uint64_t sz, const prog_t *pc, uint64_t ind, const prog_t *pg) {
+    w = csp_ssbo(w, 5, 0, sa, sz); w = lp_prog(w, pc);
+    p_dispatch d = {ind ? 0 : 1, ind ? 0 : 1, ind ? 0 : 1, 0, ind}; w = lp_rec(w, OP_DISPATCH, &d, sizeof d);
+    w = lp_prog(w, pg); w = lp_draw(w, 9); return lp_end(w);
+}
+/* One list in a submission of its own (with g_eye_pass = eye while it replays): the passes, the dispatches moved, the stop
+   reason (g_csh.stop index) that must have counted (-1: none checked), how much s0[0] rises; every moved dispatch must have
+   been met by the replay (g_csh.n == 0 after it) */
+static int csp_case(const char *name, const uint8_t *ops, uint64_t passes, uint64_t moved, int why, const uint32_t *s0, uint32_t rise, int eye) {
+    op_hdr end = {OP_END, 8}; uint32_t v0 = s0[0]; uint64_t st0 = why >= 0 ? g_csh.stop[why] : 0;
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+    g_eye_pass = eye; csp_run(name, ops, passes, moved); g_eye_pass = 0;
+    if (why >= 0 && g_csh.stop[why] == st0) MDIE("cs-hoist probe %s: no scan ended for reason %d", name, why);
+    if (g_csh.n) MDIE("cs-hoist probe %s: %d moved dispatches the replay never met", name, g_csh.n);
+    mtl_sub_commit(); mtl_finish();
+    if (s0[0] - v0 != rise) MDIE("cs-hoist probe %s: s0[0] rose by %u, expected %u", name, s0[0] - v0, rise);
+    return 4;
 }
 int mtl_probe_cs_hoist(void) {
     setenv("TOTK_CS_HOIST", "1", 1); mtl_init();
@@ -25016,7 +25052,7 @@ int mtl_probe_cs_hoist(void) {
     NvProg *gpr = [NvProg new], *cpr = [NvProg new]; gpr->sh[0] = vs; gpr->sh[1] = fs; cpr->sh[5] = cs;
     prog_t pg, pc; memset(&pg, 0, sizeof pg); memset(&pc, 0, sizeof pc); pg.serial = 0xffffffc0; pc.serial = 0xffffffc1; serial_put(pg.serial, gpr); serial_put(pc.serial, cpr);
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;   // X samples it in a compute shader
     id<MTLTexture> tex = [g_dev newTextureWithDescriptor:d]; if (!tex) MDIE("cs-hoist probe texture"); res_add(tex);
     tex_t tt; memset(&tt, 0, sizeof tt); tt.serial = 0xffffffc2; tt.d.format = 0x25; tt.d.width = tt.d.height = 8; tt.d.depth = 1; tt.d.levels = 1; tt.d.target = 1;
     serial_put(tt.serial, tex);
@@ -25070,6 +25106,113 @@ int mtl_probe_cs_hoist(void) {
     mtl_sub_commit(); mtl_finish();
     if (s0[0] != 4) MDIE("cs-hoist probe I: s0[0] = %u, expected 4 (a dispatch already run ahead ran again)", s0[0]);
     checked++;
+    /* The dependency rules. u0: memory no dispatch writes (uniforms, vertices, a sampled texture's storage, an indirect grid
+       {1, 1, 1} at its start). Shaders without an argument encoder bind nothing (encode_args), so draws' reflections can
+       name any binding; compute shaders that sample get MSL with those arguments. */
+    uint32_t *u0 = NULL; if (posix_memalign((void **)&u0, 16384, SZ) || !u0) MDIE("cs-hoist probe memory");
+    memset(u0, 0, SZ); u0[0] = u0[1] = u0[2] = 1; mtl_pool_add(u0, SZ); const uint64_t ua = (uint64_t)(uintptr_t)u0;
+    NSString *ctsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct _23 { uint _m0[1]; };\n"
+        "struct spvDescriptorSetBuffer0 { device _23* cp_s0 [[id(0)]]; texture2d<float> t0 [[id(1)]]; sampler sm0 [[id(2)]]; };\n"
+        "kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 g [[thread_position_in_grid]])\n{\n    (*spvDescriptorSet0.cp_s0)._m0[g.x] += 1u;\n}\n";
+    NSString *cdsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct _23 { uint _m0[1]; };\n"
+        "struct spvDescriptorSetBuffer0 { device _23* cp_s0 [[id(0)]]; depth2d<float> t0 [[id(1)]]; };\n"
+        "kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 g [[thread_position_in_grid]])\n{\n    (*spvDescriptorSet0.cp_s0)._m0[g.x] += 1u;\n}\n";
+    id<MTLLibrary> ctl = totk_msl_library(ctsrc, &e), cdl = ctl ? totk_msl_library(cdsrc, &e) : nil;
+    if (!ctl || !cdl) MDIE("cs-hoist probe shaders: %s", e.localizedDescription.UTF8String);
+    NvShader *cs_t = [NvShader new], *cs_d = [NvShader new];
+    for (int k = 0; k < 2; k++) { NvShader *c = k ? cs_d : cs_t;
+        c->fn = [(k ? cdl : ctl) newFunctionWithName:@"main0"]; c->src = k ? cdsrc : ctsrc; c->stage = 5; strcpy(c->key, k ? "probe-cs-hoist-cs-depth" : "probe-cs-hoist-cs-tex");
+        c->rf.nb = k ? 2 : 3; c->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SBUFP, .rw = 1, .aid = 0, .reg = 0};
+        c->rf.b[1] = (nvn_rbind){.kind = NVN_RB_TEX, .dtt = MTLTextureType2D, .dpf = k ? NVN_DPF_DEPTH : NVN_DPF_FLOAT, .aid = 1, .reg = 0};
+        c->rf.b[2] = (nvn_rbind){.kind = NVN_RB_SAMP, .aid = 2, .reg = 0};
+        c->rf.tg[0] = 64; c->rf.tg[1] = 1; c->rf.tg[2] = 1; c->ae = [c->fn newArgumentEncoderWithBufferIndex:0]; c->arg_len = c->ae.encodedLength; }
+    NvShader *vs_b = [NvShader new], *fs_w1 = [NvShader new], *fs_w2 = [NvShader new], *fs_t = [NvShader new];
+    vs_b->fn = vs->fn; vs_b->src = vsrc; vs_b->stage = 0; strcpy(vs_b->key, "probe-cs-hoist-vs-cbuf"); vs_b->rf.nb = 1; vs_b->rf.b[0] = (nvn_rbind){.kind = NVN_RB_CBUF, .aid = 0, .reg = 0};
+    for (int k = 0; k < 3; k++) { NvShader *f = k == 0 ? fs_w1 : k == 1 ? fs_w2 : fs_t; f->fn = fs->fn; f->src = fsrc; f->stage = 1; snprintf(f->key, sizeof f->key, "probe-cs-hoist-fs-%d", k); }
+    fs_w1->rf.nb = 1; fs_w1->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SBUFP, .rw = 1, .aid = 0, .reg = 0};
+    fs_w2->rf.nb = 1; fs_w2->rf.b[0] = (nvn_rbind){.kind = NVN_RB_TEXP, .dtt = MTLTextureType2D, .aid = 0};
+    fs_t->rf.nb = 2; fs_t->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SAMPT, .aid = 0, .reg = 0}; fs_t->rf.b[1] = (nvn_rbind){.kind = NVN_RB_TEX, .dtt = MTLTextureType2D, .aid = 1, .reg = 0};
+    NvProg *gpr_b = [NvProg new], *gpr_w1 = [NvProg new], *gpr_w2 = [NvProg new], *gpr_t = [NvProg new], *gpr_u = [NvProg new], *cpr_t = [NvProg new], *cpr_d = [NvProg new], *cpr_f = [NvProg new];
+    gpr_b->sh[0] = vs_b; gpr_b->sh[1] = fs; gpr_w1->sh[0] = vs; gpr_w1->sh[1] = fs_w1; gpr_w2->sh[0] = vs; gpr_w2->sh[1] = fs_w2; gpr_t->sh[0] = vs; gpr_t->sh[1] = fs_t;
+    cpr_t->sh[5] = cs_t; cpr_d->sh[5] = cs_d; cpr_f->sh[5] = cs; cpr_f->missing = 1 << 5;   // F: the compute stage not translated yet
+    // U: the vertex stage has a variant per vertex attribute class (stage_sig 0: float, 1: integer); the integer one reads uniform slot 0
+    gpr_u->sh[0] = vs; gpr_u->sh[1] = fs; gpr_u->key[0] = @"probe-cs-hoist-variant-vs"; gpr_u->sig[0] = 0;
+    gpr_u->alt[0] = [NSMutableDictionary dictionaryWithDictionary:@{@0ull: vs, @1ull: vs_b}];
+    enum { NP = 8 }; NvProg *prs[NP] = {gpr_b, gpr_w1, gpr_w2, gpr_t, gpr_u, cpr_t, cpr_d, cpr_f}; prog_t pp[NP]; memset(pp, 0, sizeof pp);
+    for (int i = 0; i < NP; i++) { pp[i].serial = 0xffffffc8 + (uint64_t)i; serial_put(pp[i].serial, prs[i]); }
+    const prog_t *pgb = &pp[0], *pgw1 = &pp[1], *pgw2 = &pp[2], *pgt = &pp[3], *pgu = &pp[4], *pct = &pp[5], *pcd = &pp[6], *pcf = &pp[7];
+    d.pixelFormat = MTLPixelFormatDepth32Float_Stencil8; id<MTLTexture> dtex = [g_dev newTextureWithDescriptor:d];
+    d.pixelFormat = MTLPixelFormatRGBA8Unorm; d.width = d.height = 4; d.usage = MTLTextureUsageShaderRead; id<MTLTexture> stex = [g_dev newTextureWithDescriptor:d];
+    if (!dtex || !stex) MDIE("cs-hoist probe textures"); res_add(dtex); res_add(stex);
+    // dt: a depth target; tz: the colour target with storage in s0 (Z); sx / sy: a sampled texture with storage in u0 / in s0
+    tex_t dt = tt, tz = tt, sx = tt, sy = tt; dt.serial = 0xffffffd8; dt.d.format = 0x36; tz.serial = 0xffffffd9; tz.mem = (uint8_t *)s0 + 8192; tz.L.size = 256;
+    sx.serial = 0xffffffda; sx.d.width = sx.d.height = 4; sx.mem = (uint8_t *)u0 + 4096; sx.L.size = 64; sy = sx; sy.serial = 0xffffffdb; sy.mem = (uint8_t *)s0 + 4096;
+    serial_put(dt.serial, dtex); serial_put(tz.serial, tex); serial_put(sx.serial, stex); serial_put(sy.serial, stex);
+    enum { T_TT = 91, T_DT, T_SX, T_SY };
+    mtl_reg_tex(T_TT, &tt, NULL); mtl_reg_tex(T_DT, &dt, NULL); mtl_reg_tex(T_SX, &sx, NULL); mtl_reg_tex(T_SY, &sy, NULL);
+    // B: the first draw's vertex shader reads uniform slot 0, bound to s0, which the dispatch writes; B2: the same slot on u0
+    w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, sa, SZ); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("B draw reads what the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
+    w = csp_pre(ops_h, pgb, &tt); w = csp_ubo(w, 0, 0, ua + 8192, 256); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("B2 draw reads other memory", ops_h, 1, 1, -1, s0, 1, 0);
+    // C: a depth target, the draw writes depth, the dispatch samples the depth target; C2: no depth write, so it moves
+    for (int k = 0; k < 2; k++) {
+        w = lp_prog(ops_h, &pg); w = csp_rt_d(w, &tt, &dt); w = lp_sc(w, 0, 0, 8, 8); w = csp_ds(w, 1 - k, 1 - k); w = lp_draw(w, 1);
+        w = csp_tex(w, 5, 0, T_DT); csp_tail(w, sa, SZ, pcd, 0, &pg);
+        checked += k ? csp_case("C2 dispatch samples depth nothing wrote", ops_h, 1, 1, -1, s0, 1, 0) : csp_case("C dispatch samples written depth", ops_h, 2, 0, 7, s0, 1, 0); }
+    /* D: a barrier with bits between the draw and the dispatch is not crossed (the pre-scan stops there: reason 8); D': the
+       same after a dispatch that moves, so the full scan meets it (reason 5) and only the first dispatch moves; D0: a barrier
+       without bits is crossed. E / E': the same with an inline uniform update. */
+    for (int k = 0; k < 5; k++) {
+        int mid = k == 1 || k == 3;   // a moved dispatch before the barrier / update
+        w = csp_pre(ops_h, &pg, &tt); w = csp_ds(w, 0, 0); w = lp_draw(w, 1);
+        if (mid) { w = csp_ssbo(w, 5, 0, sa, SZ); w = lp_prog(w, &pc); w = csp_dispatch(w); }
+        w = k < 2 ? csp_bar(w, 0x12) : k == 2 ? csp_bar(w, 0) : csp_upd(w, ua + 8192); csp_tail(w, sa, SZ, &pc, 0, &pg);
+        static const char *nm[5] = {"D barrier with bits", "D' barrier with bits after a moved dispatch", "D0 barrier without bits", "E' uniform update after a moved dispatch", "E uniform update"};
+        checked += csp_case(nm[k], ops_h, k == 2 ? 1 : 2, (uint64_t)(mid + (k == 2)), k == 2 ? -1 : mid ? 5 : 8, s0, 1u + (uint32_t)mid, 0); }
+    /* F: the compute program not translated yet: refused, and the replay meets it (dispatch() skips a program with a missing
+       stage before ending the pass, so one pass and s0 unchanged); a scan that ran it ahead would have moved it */
+    w = csp_pre(ops_h, &pg, &tt); w = lp_draw(w, 1); csp_tail(w, sa, SZ, pcf, 0, &pg);
+    checked += csp_case("F compute program missing", ops_h, 1, 0, 2, s0, 0, 0);
+    // V: stereo replay of an eye
+    w = csp_pre(ops_h, &pg, &tt); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("V eye replay", ops_h, 2, 0, 9, s0, 1, 1);
+    // W: the first draw's fragment shader may write memory (a writable storage buffer) or reads a descriptor pool
+    w = csp_pre(ops_h, pgw1, &tt); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("W1 draw writes storage", ops_h, 2, 0, 0, s0, 1, 0);
+    w = csp_pre(ops_h, pgw2, &tt); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("W2 draw reads a texture pool", ops_h, 2, 0, 0, s0, 1, 0);
+    // X: the dispatch samples the pass's colour target
+    w = csp_pre(ops_h, &pg, &tt); w = lp_draw(w, 1); w = csp_tex(w, 5, 0, T_TT); csp_tail(w, sa, SZ, pct, 0, &pg);
+    checked += csp_case("X dispatch samples the colour target", ops_h, 2, 0, 2, s0, 1, 0);
+    // Y: an indirect dispatch (its grid in u0)
+    w = csp_pre(ops_h, &pg, &tt); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, ua, &pg);
+    checked += csp_case("Y indirect dispatch", ops_h, 2, 0, 2, s0, 1, 0);
+    // Z: the dispatch's storage buffer covers the colour target's storage
+    w = csp_pre(ops_h, &pg, &tz); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("Z storage buffer over the colour target", ops_h, 2, 0, 2, s0, 1, 0);
+    /* T: the draw samples a texture with storage in u0 (and a sampler), the dispatch samples it too (and a sampler): moves;
+       T2: the draw samples a texture with storage in s0, which the dispatch writes */
+    w = csp_pre(ops_h, pgt, &tt); w = csp_tex(w, 1, 0, T_SX); w = lp_draw(w, 1); w = csp_tex(w, 5, 0, T_SX); csp_tail(w, sa, SZ, pct, 0, &pg);
+    checked += csp_case("T draw and dispatch sample other memory", ops_h, 1, 1, -1, s0, 1, 0);
+    w = csp_pre(ops_h, pgt, &tt); w = csp_tex(w, 1, 0, T_SY); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("T2 draw samples what the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
+    // R: vertex buffer in s0 (not moved) and in u0 (moved); an index buffer in s0 (not moved)
+    w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, sa + 4096, 256); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("R1 vertex buffer the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
+    w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, ua + 8192, 256); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("R1b vertex buffer in other memory", ops_h, 1, 1, -1, s0, 1, 0);
+    w = csp_pre(ops_h, &pg, &tt); w = csp_vbuf(w, 0, 0); w = csp_draw_idx(w, sa + 4096); csp_tail(w, sa, SZ, &pc, 0, &pg);
+    checked += csp_case("R2 index buffer the dispatch writes", ops_h, 2, 0, 3, s0, 1, 0);
+    /* U: the same program's second draw has integer vertex attributes, so prog_fit gives it the variant that reads uniform
+       slot 0 (s0); the scan must judge that variant, not the one the program holds while it scans */
+    w = csp_vattr(ops_h, 1, 0x25); w = csp_ubo(w, 0, 0, sa, SZ); w = csp_pre(w, pgu, &tt); w = lp_draw(w, 1); w = csp_vattr(w, 1, 0x27); w = lp_draw(w, 2);
+    w = csp_tail(w, sa, SZ, &pc, 0, &pg) - 8; w = csp_vattr(w, 0, 0); lp_end(w);
+    checked += csp_case("U variant the draw will use", ops_h, 2, 0, 3, s0, 1, 0);
+    for (int i = T_TT; i <= T_SY; i++) mtl_reg_tex(i, NULL, NULL);
+    for (int i = 0; i < NP; i++) serial_del(pp[i].serial);
+    for (int i = 0; i < 4; i++) serial_del((uint64_t[]){dt.serial, tz.serial, sx.serial, sy.serial}[i]);
+    mtl_pool_del(u0); free(u0); defer_obj_release(dtex); defer_obj_release(stex);
     memset(&R, 0, sizeof R); state_reset(); g_csh_probe_neg = 0;
     for (int i = 0; i < 3; i++) serial_del((uint64_t[]){pg.serial, pc.serial, tt.serial}[i]);
     mtl_pool_del(s0); free(s0); defer_obj_release(rb); defer_obj_release(tex);
