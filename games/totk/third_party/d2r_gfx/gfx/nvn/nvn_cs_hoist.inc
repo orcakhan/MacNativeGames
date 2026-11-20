@@ -20,7 +20,7 @@
    Virtual-pool aliases (one physical page under several addresses): every range is judged by the address of the storage
    behind it (totk_vpool_canon, on a copy of the mappings taken once per scan); a range that cannot be (an unmapped hole of a
    virtual pool, mappings whose storage does not follow on) cannot be listed, as an unknown extent.
-   On by default in Breath of the Wild only (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, =1 on. */
+   On by default in Breath of the Wild only (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, any other value on. */
 static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run, 3 / 4 csh_uniform_hit ignores the uniform snapshot / the renamed updates
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
 /* op: the dispatch commands run ahead and not yet met by the replay, in submission sub; moved: dispatches run ahead; scans:
@@ -47,7 +47,7 @@ enum { CSH_DEFAULT = 0 };
 static _Atomic int g_csh_on = -1;   // -1 until TOTK_CS_HOIST is read; "flag cs_hoist <0|1>" switches it while the game runs (csh_set)
 static int csh_on(void) {
     int m = atomic_load_explicit(&g_csh_on, memory_order_relaxed);
-    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e ? atoi(e) == 1 : CSH_DEFAULT; int was = -1; if (atomic_compare_exchange_strong(&g_csh_on, &was, m) && m) MLOG("cs-hoist on (TOTK_CS_HOIST=0 turns it off): compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); m = atomic_load(&g_csh_on); }
+    if (m < 0) { const char *e = getenv("TOTK_CS_HOIST"); m = e ? strcmp(e, "0") != 0 : CSH_DEFAULT; int was = -1; if (atomic_compare_exchange_strong(&g_csh_on, &was, m) && m) MLOG("cs-hoist on (TOTK_CS_HOIST=0 turns it off): compute dispatches between the draws of a pass run ahead of it when nothing the draws before them read changes"); m = atomic_load(&g_csh_on); }
     return m;
 }
 /* "flag cs_hoist <0|1>" (TOTK_INPUT_FILE): the same frame with and without the hoist in one session (image comparison).
