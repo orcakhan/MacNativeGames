@@ -11,7 +11,9 @@
    buffer, an image), reads memory not listed (descriptor pools, global memory, typed buffers, indirect records) or has a
    geometry or tessellation stage stops the scan. A dispatch's storage buffers count as written (csh_cs); it is refused for
    an indirect grid, a binding with no listed range, a uniform or storage buffer over an attachment's storage, a sampled
-   colour attachment of the pass, or the pass's depth sampled after a draw of the stretch wrote depth or stencil.
+   colour attachment of the pass, or the pass's depth sampled after a draw of the stretch wrote depth or stencil. Nor may it
+   change what the draws before it read as uniforms (csh_uniform_hit): a writable storage buffer in a uniform snapshot copy
+   not dropped yet, or a storage buffer over a pending renamed uniform update.
    Not while another mechanism replays or rewrites these commands (stereo eyes, world freeze, pass fusion and deferral, cube
    groups, layered passes, TBDR, a geometry draw's raster), with a pending clear, or past the cursor's 8 return addresses. A
    dispatch already run ahead and not yet met by the replay (a later draw scanned again with no pass opened) stops the scan.
@@ -19,11 +21,11 @@
    behind it (totk_vpool_canon, on a copy of the mappings taken once per scan); a range that cannot be (an unmapped hole of a
    virtual pool, mappings whose storage does not follow on) cannot be listed, as an unknown extent.
    On by default except in Ocarina of Time (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, =1 on. */
-static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run
+static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run, 3 / 4 csh_uniform_hit ignores the uniform snapshot / the renamed updates
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
 /* op: the dispatch commands run ahead and not yet met by the replay, in submission sub; moved: dispatches run ahead; scans:
    full scans; stop[]: why scans ended or did not run: 0 the first draw's reads cannot be listed, 1 a later draw's, 2 a dispatch
-   refused, 3 a dispatch writes what a draw before it reads, 4 the dispatch limit, 5 another command or a barrier, 6 a bad
+   refused, 3 a dispatch writes what a draw before it reads (or would change the uniforms it reads: csh_uniform_hit), 4 the dispatch limit, 5 another command or a barrier, 6 a bad
    cursor, 7 depth already written, 8 the pre-scan found no dispatch, 9 refused at entry, 10 the scan limit (CSH_OPS commands),
    11 the scan reached the end of the stream. Every full scan (scans) ends in exactly one of 0 to 7, 10 and 11; 8 and 9 are
    calls that did not scan. csh_stop_name gives the short names the statistics line prints (on the first full scan and every
@@ -147,6 +149,25 @@ static int csh_cs(NvShader *cs, const p_dispatch *dp, csh_rng *w, int *nw, int *
         } }
     return 1;
 }
+/* Whether the dispatch, run now, would change what the draws it jumps over read as uniforms, through two side effects of
+   running it that reach further than the storage it writes (both judged by guest address, as they are):
+   - encode_args drops (usnap_drop) every uniform snapshot copy a writable storage buffer overlaps, and a copy is merged from
+     the submission's uniform ranges up to 256 bytes apart (up to 1 MiB): a draw before it may read another range of that
+     copy, which would then come from live memory, rewritten by the game since the submit call (the copy exists for that);
+   - dispatch() writes every pending renamed uniform update to memory (upd_guard_stage, upd_flush) when any of its storage
+     buffers overlaps one, dropping their copies too, and the draws before it would no longer read their private copies.
+   In their place both only reach the draws after the dispatch. So it is refused when a writable storage buffer overlaps a
+   copy not dropped yet (the copy's bounds, not the buffer's), or any storage buffer a pending renamed update. */
+static int csh_uniform_hit(const NvShader *cs) {
+    for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
+        if (b->kind != NVN_RB_SBUFP || b->reg >= 16) continue;   // other kinds that reach either: refused by csh_cs
+        const p_bind_buf *u = &S.ssbo[5][b->reg]; if (!u->addr) continue;
+        const uint64_t lo = u->addr, hi = u->addr + (u->size ? u->size : 1);
+        if (g_nupd && g_csh_probe_neg != 4 && upd_overlap_seq(lo, hi)) return 1;
+        if (b->rw && g_csh_probe_neg != 3) for (int k = usnap_first(lo); k < g_nusnap && g_usnap[k].lo < hi; k++) if (atomic_load(&g_usnap[k].st) != US_DROPPED) return 1;
+    }
+    return 0;
+}
 // Commands that end the scan before state_op is asked (it takes render conditions and SetRenderEnable as state)
 static int csh_stop_op(uint32_t op, const void *a) {
     if (op == OP_BARRIER) { uint32_t bits; memcpy(&bits, a, sizeof bits); return bits != 0; }
@@ -225,7 +246,7 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
             int nwr = 0, depth = 0;
             if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr, &depth)) { why = 2; break; }
             if (depth && dwrote) { why = 7; break; }   // it would miss depth the draws before it wrote
-            if (csh_hit(wr, nwr, rd, nrd)) { why = 3; break; }   // the draws before it read what it writes
+            if (csh_hit(wr, nwr, rd, nrd) || csh_uniform_hit(cpr->sh[5])) { why = 3; break; }   // the draws before it read what it writes, or uniforms it would change
             if (g_csh.n >= CSH_MAX) { why = 4; break; }
             PD("H %llu dispatch %s moved ahead of the pass%s", (unsigned long long)(g_stat_pass + 1), cpr->sh[5]->key, depth ? " (samples the pass's depth, which no draw before it wrote)" : "");
             dispatch(dp); g_csh.op[g_csh.n++] = q; g_csh.moved++; moved++;

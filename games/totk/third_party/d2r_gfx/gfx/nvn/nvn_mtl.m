@@ -24989,9 +24989,12 @@ int mtl_probe_layer_merge(void) {
    texture storage elsewhere / in what the dispatch writes; R1, R1b, R1c, R2 vertex and index buffers (R1c: a stream of unknown size); U the shader variant the
    draw will use (prog_fit), not the one its program holds while the scan runs; C3 a later draw of the stretch writes the
    depth the dispatch samples; Z2 the dispatch's uniform buffer over the colour target's storage; W3 a draw samples a handle
-   that names no registered texture; AL1 to AL5 virtual-pool aliases (ranges judged by the physical storage behind them).
-   Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must fail),
-   TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail). */
+   that names no registered texture; SN / SN2 a draw's uniform range in the snapshot copy the dispatch writes into / no copy
+   written; RU / RU2 the dispatch's storage under a renamed uniform update / under none (the draw's pixels show the colour of
+   the submit call, which the CPU rewrote after it); AL1 to AL5 virtual-pool aliases (ranges judged by the physical storage
+   behind them). Negative controls: TOTK_PROBE_NEGATIVE=1 csh_take never skips (the dispatch runs twice: s0[0] == 2 must
+   fail), TOTK_PROBE_NEGATIVE=2 the scan does not run (2 passes must fail), =3 / =4 the scan ignores the snapshot copies / the
+   renamed updates (SN's / RU's pixels must fail). */
 static uint8_t *csp_rt(uint8_t *w, const tex_t *t) { p_set_rt r; memset(&r, 0, sizeof r); r.n = 1; r.color[0] = t; return lp_rec(w, OP_SET_RT, &r, sizeof r); }
 static uint8_t *csp_ssbo(uint8_t *w, int st, int idx, uint64_t a, uint64_t n) { p_bind_buf b = {st, idx, a, n}; return lp_rec(w, OP_BIND_SSBO, &b, sizeof b); }
 static uint8_t *csp_dispatch(uint8_t *w) { p_dispatch d = {1, 1, 1, 0, 0}; return lp_rec(w, OP_DISPATCH, &d, sizeof d); }
@@ -25235,6 +25238,58 @@ int mtl_probe_cs_hoist(void) {
     // W3: the first draw samples a texture handle that names no registered texture (its storage cannot be listed)
     w = csp_pre(ops_h, pgt, &tt); w = csp_tex(w, 1, 0, 0x5f); w = lp_draw(w, 1); csp_tail(w, sa, SZ, &pc, 0, &pg);
     checked += csp_case("W3 draw samples an unregistered handle", ops_h, 2, 0, 0, s0, 1, 0);
+    /* SN / RU: what the draws before the dispatch read as uniforms, in memory m3 of their own. The draw (left half) reads, through
+       a real argument buffer, the second float4 of U (32 bytes) as its colour; the CPU rewrites it after the submit call (the
+       game's threads), so it must come from the submission's snapshot. The dispatch writes W (256 bytes, m3 + 256 / + 8192).
+       SN: the snapshot also holds a uniform range bound elsewhere at W's start, merged into U's copy (224 bytes apart): the
+       dispatch's encode drops that whole copy (usnap_drop), so run ahead it would make the draw read the rewritten memory.
+       RU: renamed inline updates logged before the list, one over U's first float4, one in W: dispatch() writes every logged
+       update to memory first (upd_guard_stage, upd_flush), dropping U's copy. SN2 / RU2: W in no copy / no update in W: moved. */
+    {
+        NSString *fcsrc = @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 c [[color(0)]];\n};\n\nstruct main0_in\n{\n    float4 m_0 [[user(locn0)]];\n};\n\n"
+            "struct _16\n{\n    float4 _m0[2];\n};\n\nstruct spvDescriptorSetBuffer0\n{\n    constant _16* fp_c0 [[id(0)]];\n};\n\n"
+            "fragment main0_out main0(main0_in in [[stage_in]], constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]])\n{\n    main0_out out = {};\n    out.c = (*spvDescriptorSet0.fp_c0)._m0[1];\n    return out;\n}\n";
+        id<MTLLibrary> fcl = totk_msl_library(fcsrc, &e); if (!fcl) MDIE("cs-hoist probe shaders: %s", e.localizedDescription.UTF8String);
+        NvShader *fs_c = [NvShader new]; fs_c->fn = [fcl newFunctionWithName:@"main0"]; fs_c->src = fcsrc; fs_c->stage = 1; strcpy(fs_c->key, "probe-cs-hoist-fs-cbuf");
+        fs_c->rf.nb = 1; fs_c->rf.b[0] = (nvn_rbind){.kind = NVN_RB_CBUF, .aid = 0, .reg = 0}; fs_c->ae = [fs_c->fn newArgumentEncoderWithBufferIndex:0]; fs_c->arg_len = fs_c->ae.encodedLength;
+        NvProg *gpr_c = [NvProg new]; gpr_c->sh[0] = vs; gpr_c->sh[1] = fs_c; prog_t pgc; memset(&pgc, 0, sizeof pgc); pgc.serial = 0xffffffe0; serial_put(pgc.serial, gpr_c);
+        uint8_t *m3 = NULL; if (posix_memalign((void **)&m3, 16384, SZ) || !m3) MDIE("cs-hoist probe memory");
+        memset(m3, 0, SZ); mtl_pool_add(m3, SZ); const uint64_t ma = (uint64_t)(uintptr_t)m3;
+        static const float c_old[4] = {0.25f, 0.5f, 0.75f, 1.0f}, c_new[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+        static const uint8_t px_old[4] = {64, 128, 191, 255};
+        static const char *nm[4] = {"SN draw reads a snapshot copy the dispatch writes into", "SN2 dispatch writes no snapshot copy",
+            "RU dispatch's storage under a renamed update", "RU2 no renamed update under the dispatch's storage"};
+        static uint8_t ops_s[256];
+        if (!usnap_on()) MDIE("cs-hoist probe: the uniform snapshot is off (TOTK_UBO_SNAPSHOT=0)");
+        for (int k = 0; k < 4; k++) {
+            const int ru = k >= 2, twin = k & 1; const uint64_t U = ma + (ru ? 4096 : 0), W = ma + (ru ? 8192 : 256);
+            uint8_t *q = csp_ubo(ops_s, 1, 0, U, 32); if (!ru && !twin) q = csp_ubo(q, 0, 1, W, 16); lp_end(q);   // the uniform ranges the submission binds
+            const uint64_t hs[1] = {(uint64_t)(uintptr_t)ops_s};
+            w = csp_pre(ops_h, &pgc, &tt); w = lp_sc(w, 0, 0, 4, 8); w = csp_ubo(w, 1, 0, U, 32); w = lp_draw(w, 1);
+            w = csp_ssbo(w, 5, 0, W, 256); w = lp_prog(w, &pc); w = csp_dispatch(w); w = lp_prog(w, &pg); w = lp_sc(w, 4, 0, 4, 8); w = lp_draw(w, 9); lp_end(w);
+            memcpy(m3 + (U - ma) + 16, c_old, 16);
+            const uint32_t w0 = *(const uint32_t *)(m3 + (W - ma)); const uint64_t st0 = g_csh.stop[3];
+            mtl_sub_begin(); mtl_sub_snapshot_ubos(hs, 1); mtl_exec((const uint8_t *)&end);
+            const usnap_t *cu = usnap_find(U, 32), *cw = usnap_find(W, 16);   // copied now, before the CPU's rewrite
+            if (!cu || (!ru && !twin ? cw != cu : cw != NULL)) MDIE("cs-hoist probe %s: snapshot copies %p / %p, expected U held%s", nm[k], (const void *)cu, (const void *)cw, !ru && !twin ? " with W's start in the same copy" : " and W in none");
+            if (ru) { static const uint8_t ud[16] = {0x3c, 0x3c, 0x3c, 0x3c}; mtl_sub_update(ud, U, 16); if (!twin) mtl_sub_update(ud, W + 128, 16); }
+            memcpy(m3 + (U - ma) + 16, c_new, 16);   // the game rewrites the constants after the submit call
+            const uint64_t p0 = g_stat_pass, m0 = g_csh.moved;   // as csp_run, with the pixels checked before the counts
+            mtl_exec(ops_h); rp_end();
+            const uint64_t dp = g_stat_pass - p0, dm = g_csh.moved - m0; const int left = g_csh.n;
+            MLOG("cs-hoist probe %s: %llu passes, %llu dispatches moved ahead", nm[k], (unsigned long long)dp, (unsigned long long)dm);
+            enc_b_copy_texture_buffer(blit(), tex, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(8, 8, 1), rb, 0, 8 * 4, 8 * 8 * 4);
+            mtl_sub_commit(); mtl_finish();
+            for (int p = 0; p < 64; p++) { if (p % 8 >= 4) continue; const uint8_t *got = (const uint8_t *)rb.contents + p * 4;
+                for (int c = 0; c < 4; c++) { if (abs((int)got[c] - (int)px_old[c]) > 1) MDIE("cs-hoist probe %s: pixel %d,%d channel %d = %u, expected %u (the colour of the submit call)", nm[k], p % 8, p / 8, c, got[c], px_old[c]); checked++; } }
+            if (dp != (twin ? 1u : 2u) || dm != (twin ? 1u : 0u)) MDIE("cs-hoist probe %s: %llu passes / %llu moved, expected %d / %d", nm[k], (unsigned long long)dp, (unsigned long long)dm, twin ? 1 : 2, twin);
+            if (!twin && g_csh.stop[3] == st0) MDIE("cs-hoist probe %s: no scan ended for reason 3", nm[k]);
+            if (left) MDIE("cs-hoist probe %s: %d moved dispatches the replay never met", nm[k], left);
+            if (*(const uint32_t *)(m3 + (W - ma)) - w0 != 1) MDIE("cs-hoist probe %s: W[0] rose by %u, expected 1", nm[k], *(const uint32_t *)(m3 + (W - ma)) - w0);
+            checked += 5;
+        }
+        serial_del(pgc.serial); mtl_pool_del(m3); free(m3);
+    }
     /* AL: virtual-pool aliases made as nvnMemoryPoolInitialize / MapVirtual / Finalize make them (last: they stay in use for the
        rest of the process). Physical pool P (4 pages, flags as the game's 0x189: its own host pages, which the CPU reads here)
        and virtual pools V1, V2 (4 pages, 0x2a1, GPU-visible): V1[0] <- P[0] and V1[1] <- P[1] (two requests, adjacent in both),
