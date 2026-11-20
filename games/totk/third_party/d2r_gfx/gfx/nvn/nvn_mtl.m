@@ -25108,8 +25108,10 @@ int mtl_probe_cs_hoist(void) {
     w = lp_prog(ops_h, &pg); w = lp_draw(w, 5); w = lp_draw(w, 6);
     w = csp_ssbo(w, 5, 0, sa, SZ); w = lp_prog(w, &pc); w = csp_dispatch(w); w = lp_prog(w, &pg); w = lp_draw(w, 7); lp_end(w);
     mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
-    R.has_rt = 0; R.has_sc = 0;
+    R.has_rt = 0; R.has_sc = 0; const uint64_t am0 = g_csh.stop[12];
     csp_run("I no pass opens", ops_h, 0, 1); checked += 2;
+    if (g_csh.stop[12] == am0) MDIE("cs-hoist probe I: no rescan stopped at the dispatch already run ahead (already_moved)");
+    checked++;
     mtl_sub_commit(); mtl_finish();
     if (s0[0] != 4) MDIE("cs-hoist probe I: s0[0] = %u, expected 4 (a dispatch already run ahead ran again)", s0[0]);
     checked++;
@@ -25344,9 +25346,9 @@ int mtl_probe_cs_hoist(void) {
     for (int i = 0; i < NP; i++) serial_del(pp[i].serial);
     for (int i = 0; i < 4; i++) serial_del((uint64_t[]){dt.serial, tz.serial, sx.serial, sy.serial}[i]);
     mtl_pool_del(u0); free(u0); defer_obj_release(dtex); defer_obj_release(stex);
-    {   // every full scan ended in exactly one of the stop counters 0 to 7, 10 and 11 (8 and 9 are calls that did not scan)
+    {   // every full scan ended in exactly one of the stop counters 0 to 7 and 10 to 12 (8 and 9 are calls that did not scan)
         uint64_t ended = 0; for (int i = 0; i < CSH_STOPS; i++) if (i != 8 && i != 9) ended += g_csh.stop[i];
-        if (ended != g_csh.scans) MDIE("cs-hoist probe: %llu full scans but %llu stop counts (0-7, 10, 11)", (unsigned long long)g_csh.scans, (unsigned long long)ended);
+        if (ended != g_csh.scans) MDIE("cs-hoist probe: %llu full scans but %llu stop counts (0-7, 10-12)", (unsigned long long)g_csh.scans, (unsigned long long)ended);
         checked++;
         csh_log_stats();
     }

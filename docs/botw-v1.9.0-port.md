@@ -577,7 +577,7 @@ storage behind virtual-pool aliases), no sampled colour target of the pass, no s
 the scan stops at barriers with bits, uniform updates, render conditions and any command that is not plain state. A
 dispatch also stays in place when running it early would change the uniforms the draws before it read: a writable storage
 buffer in a uniform snapshot copy not dropped yet, or a storage buffer under a pending renamed uniform update.
-`make -C games/totk probe-gpu-cs-hoist` checks the rules (945 checks, with negative controls).
+`make -C games/totk probe-gpu-cs-hoist` checks the rules (946 checks, with negative controls).
 
 - On by default in Breath of the Wild only; Tears of the Kingdom and Ocarina of Time keep it off until it is measured
   there. `TOTK_CS_HOIST=0` turns it off, any other value on; `flag cs_hoist <0|1>` in `TOTK_INPUT_FILE` switches it while the game runs.

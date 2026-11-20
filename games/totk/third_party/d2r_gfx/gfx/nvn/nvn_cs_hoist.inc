@@ -27,13 +27,14 @@ enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
    full scans; stop[]: why scans ended or did not run: 0 the first draw's reads cannot be listed, 1 a later draw's, 2 a dispatch
    refused, 3 a dispatch writes what a draw before it reads (or would change the uniforms it reads: csh_uniform_hit), 4 the dispatch limit, 5 another command or a barrier, 6 a bad
    cursor, 7 depth already written, 8 the pre-scan found no dispatch, 9 refused at entry, 10 the scan limit (CSH_OPS commands),
-   11 the scan reached the end of the stream. Every full scan (scans) ends in exactly one of 0 to 7, 10 and 11; 8 and 9 are
+   11 the scan reached the end of the stream, 12 a dispatch already run ahead by an earlier scan the replay has not met yet
+   (a later draw scanned again with no pass opened). Every full scan (scans) ends in exactly one of 0 to 7 and 10 to 12; 8 and 9 are
    calls that did not scan. csh_stop_name gives the short names the statistics line prints (on the first full scan and every
    20,000th, and on the first moved dispatch and every 10,000th). */
-enum { CSH_STOPS = 12 };
+enum { CSH_STOPS = 13 };
 static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[CSH_STOPS]; } g_csh;
 static const char *const csh_stop_name[CSH_STOPS] = {"first_draw", "later_draw", "dispatch_refused", "memory_conflict", "dispatch_limit", "other_op", "bad_cursor",
-    "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end"};
+    "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end", "already_moved"};
 /* On by default in BotW only (2026-11-19: Mac GPU p50 -1.4% in a balanced off/on/on/off run, frame time and submit cost
    unchanged, same picture; iPad A16 GPU p50 -0.7%, inside the run-to-run range, no regression). Off in Tears of the
    Kingdom until it is measured there (it leans most on virtual pools and render targets in them) and in Ocarina of Time,
@@ -243,7 +244,7 @@ static void csh_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) {
             const p_dispatch *dp = a;
             if (!dp->indirect && (!dp->x || !dp->y || !dp->z)) continue;   // an empty grid: dispatch() runs nothing and ends no pass
             { int ran = 0; for (int i = 0; i < g_csh.n; i++) ran |= g_csh.op[i] == q;   // already run ahead by an earlier scan the replay has not passed yet
-              if (ran) { why = 2; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
+              if (ran) { why = 12; break; } }   // (no pass opened since: no targets, or a draw in between ended it)
             NvProg *cpr = csh_prog(S.cprog ? S.cprog : S.prog);   // as dispatch()
             int nwr = 0, depth = 0;
             if (!cpr || cpr->missing || !csh_cs(cpr->sh[5], dp, wr, &nwr, &depth)) { why = 2; break; }
