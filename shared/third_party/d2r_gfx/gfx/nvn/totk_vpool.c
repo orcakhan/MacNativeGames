@@ -34,7 +34,10 @@ static uint64_t round_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1)
 static totk_vpool_span g_vpools[TOTK_VPOOL_MAX_POOLS]; static int g_nvpools;
 static totk_vpool_ent g_vmap[TOTK_VPOOL_MAX_MAPS]; static int g_nvmap, g_vmap_lost;
 static uint64_t g_map_gen;
-static void vmap_lose(const char *what) { if (!g_vmap_lost) LOG("【红】vpool: %s table full; ranges in virtual pools are no longer told apart by their backing", what); g_vmap_lost = 1; }
+/* Logged by the first view that sees it (totk_vpool_view_sync): only the compute-dispatch hoist reads views, so games that
+   never run it (and stay silently capped for the diagnostics, as before) print nothing. */
+static const char *g_vmap_lost_what;
+static void vmap_lose(const char *what) { if (!g_vmap_lost) g_vmap_lost_what = what; g_vmap_lost = 1; }
 // Cuts [lo, hi) out of the mappings (0: no room to split an entry around it)
 static int vmap_cut(uintptr_t lo, uintptr_t hi) {
     for (int i = 0; i < g_nvmap; i++) {
@@ -69,6 +72,7 @@ int totk_vpool_backing(uintptr_t va, uint64_t len, uintptr_t *cpu) {
 void totk_vpool_view_sync(totk_vpool_view *v) {
     if (__atomic_load_n(&g_map_gen, __ATOMIC_ACQUIRE) == v->gen) return;
     pthread_mutex_lock(&g_map_mu);
+    if (g_vmap_lost && !v->lost) LOG("【红】vpool: %s table full; the compute-dispatch hoist can no longer tell storage behind virtual pools apart and moves nothing from here on", g_vmap_lost_what);
     v->gen = g_map_gen; v->lost = g_vmap_lost; v->npool = g_nvpools; v->nmap = g_nvmap;
     memcpy(v->pool, g_vpools, (size_t)g_nvpools * sizeof *g_vpools); memcpy(v->map, g_vmap, (size_t)g_nvmap * sizeof *g_vmap);
     pthread_mutex_unlock(&g_map_mu);
