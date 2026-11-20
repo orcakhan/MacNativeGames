@@ -20,7 +20,7 @@
    Virtual-pool aliases (one physical page under several addresses): every range is judged by the address of the storage
    behind it (totk_vpool_canon, on a copy of the mappings taken once per scan); a range that cannot be (an unmapped hole of a
    virtual pool, mappings whose storage does not follow on) cannot be listed, as an unknown extent.
-   On by default except in Ocarina of Time (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, =1 on. */
+   On by default in Breath of the Wild only (CSH_DEFAULT below); TOTK_CS_HOIST=0 off, =1 on. */
 static int g_csh_probe_neg;   // probe-gpu-cs-hoist negative controls: 1 csh_take never skips (a moved dispatch runs again), 2 the scan does not run, 3 / 4 csh_uniform_hit ignores the uniform snapshot / the renamed updates
 enum { CSH_MAX = 64, CSH_RN = 1024, CSH_OPS = 4096 };
 /* op: the dispatch commands run ahead and not yet met by the replay, in submission sub; moved: dispatches run ahead; scans:
@@ -34,13 +34,15 @@ enum { CSH_STOPS = 12 };
 static struct { const uint8_t *op[CSH_MAX]; int n; uint64_t sub, moved, scans, stop[CSH_STOPS]; } g_csh;
 static const char *const csh_stop_name[CSH_STOPS] = {"first_draw", "later_draw", "dispatch_refused", "memory_conflict", "dispatch_limit", "other_op", "bad_cursor",
     "depth_written", "no_dispatch", "entry_refused", "scan_limit", "scan_end"};
-/* On by default in BotW and TOTK (2026-11-19: BotW GPU p50 -1.4% in a balanced off/on/on/off run, frame time and
-   submit cost unchanged, same picture); off in Ocarina of Time, whose barrier mode, mesh draws, indirect dispatches and
-   VR replay have not been validated with it. TOTK_CS_HOIST=0 or =1 overrides. */
-#ifdef GAME_OOT
-enum { CSH_DEFAULT = 0 };
-#else
+/* On by default in BotW only (2026-11-19: Mac GPU p50 -1.4% in a balanced off/on/on/off run, frame time and submit cost
+   unchanged, same picture; iPad A16 GPU p50 -0.7%, inside the run-to-run range, no regression). Off in Tears of the
+   Kingdom until it is measured there (it leans most on virtual pools and render targets in them) and in Ocarina of Time,
+   whose barrier mode, mesh draws, indirect dispatches and VR replay have not been validated with it. TOTK_CS_HOIST
+   overrides. */
+#ifdef GAME_BOTW
 enum { CSH_DEFAULT = 1 };
+#else
+enum { CSH_DEFAULT = 0 };
 #endif
 static _Atomic int g_csh_on = -1;   // -1 until TOTK_CS_HOIST is read; "flag cs_hoist <0|1>" switches it while the game runs (csh_set)
 static int csh_on(void) {

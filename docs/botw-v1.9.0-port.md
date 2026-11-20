@@ -574,11 +574,13 @@ before the pass without changing anything the draws before it read runs at once,
 (`nvn_cs_hoist.inc`, a port of seedds/nxnative's `cs_hoist_try`, MIT). The rules are general memory checks, not per game:
 what the dispatch writes against what the earlier draws read (uniform, vertex, index, sampled textures, judged by the
 storage behind virtual-pool aliases), no sampled colour target of the pass, no sampled depth after a draw wrote it, and
-the scan stops at barriers with bits, uniform updates, render conditions and any command that is not plain state.
-`make -C games/totk probe-gpu-cs-hoist` checks the rules (413 checks, with negative controls).
+the scan stops at barriers with bits, uniform updates, render conditions and any command that is not plain state. A
+dispatch also stays in place when running it early would change the uniforms the draws before it read: a writable storage
+buffer in a uniform snapshot copy not dropped yet, or a storage buffer under a pending renamed uniform update.
+`make -C games/totk probe-gpu-cs-hoist` checks the rules (945 checks, with negative controls).
 
-- On by default in Breath of the Wild and Tears of the Kingdom; off in Ocarina of Time (not validated there).
-  `TOTK_CS_HOIST=0` turns it off, `=1` on; `flag cs_hoist <0|1>` in `TOTK_INPUT_FILE` switches it while the game runs.
+- On by default in Breath of the Wild only; Tears of the Kingdom and Ocarina of Time keep it off until it is measured
+  there. `TOTK_CS_HOIST=0` turns it off, `=1` on; `flag cs_hoist <0|1>` in `TOTK_INPUT_FILE` switches it while the game runs.
 - The log prints a `[cs-hoist]` line with the dispatches moved and why each scan stopped; the pass dump marks each moved
   dispatch with an `H` line.
 
@@ -597,7 +599,13 @@ submit thread's cycles per frame did not change either). About 6-7 dispatches pe
 splits are dispatches that sample the depth a draw before them wrote, which must stay where they are. Pictures of
 consecutive frames in one session, switching with `flag cs_hoist`, differ no more with the switch than without it
 (RMSE 1.4% across the switch, 1.7% between groups with the same setting taken the same time apart, 0.1-0.2% between
-consecutive frames). Not measured yet: Tears of the Kingdom and iPad, where the GPU is the limit.
+consecutive frames).
+
+iPad (A16), 30 fps cap, 1600x900 upscaled to 1920x1080 with MetalFX, off / on / on / off: GPU p50 29.90 / 29.85 / 29.79 /
+30.17 ms (-0.7%, inside the run-to-run range), frame 33.4 ms in all runs, no measurable submit cost. Tears of the Kingdom
+is not measured yet.
+
+These measurements predate the uniform-snapshot rule above; how many dispatches still move with it is not measured yet.
 
 ## Not tested and known issues
 
