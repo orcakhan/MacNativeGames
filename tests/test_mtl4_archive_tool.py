@@ -118,6 +118,23 @@ class Runner(unittest.TestCase):
         self.assertEqual(run.arm_order(3), [('old', 'new'), ('new', 'old'), ('old', 'new')])
         self.assertEqual(''.join(run.game_order(3)), 'ABABAB')
 
+    def test_tool_env_mirrors_packaging_and_lets_a_run_override_it(self):
+        # the check run looks every key up again (TOTK_PAR_RECHECK=1) where a plain run does not; the game's own TOTK_ / DM_
+        # settings of the shell never leak in
+        import run
+        os.environ['TOTK_PSO_MTL4'] = '0'
+        try:
+            env = run.tool_env(Path('/r'), Path('/f'), None, True, {'TOTK_PAR_RECHECK': '1'})
+        finally:
+            del os.environ['TOTK_PSO_MTL4']
+        self.assertEqual(env['TOTK_PAR_RECHECK'], '1')
+        self.assertEqual((env['TOTK_SHADER_CACHE'], env['TOTK_SHADER_SEED_DIR'], env['TOTK_PIPELINE_ARCHIVE_HOST']),
+                         ('/f', '/r/build/shader-seed', '1'))
+        self.assertNotIn('TOTK_PSO_MTL4', env)
+        device = run.tool_env(Path('/r'), Path('/f'), Path('/seed'), False, {})
+        self.assertNotIn('TOTK_PIPELINE_ARCHIVE_HOST', device)
+        self.assertEqual((device['TOTK_PAR_RECHECK'], device['TOTK_SHADER_SEED_DIR']), ('0', '/seed'))
+
     def test_drop_cache_removes_only_a_test_bundle_ids_folder(self):
         import run
         with tempfile.TemporaryDirectory() as t:

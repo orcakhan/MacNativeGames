@@ -87,12 +87,20 @@ def clone(src: Path, dst: Path):
     subprocess.run(['/bin/cp', '-Rc', str(src), str(dst)], check=True)
 
 
-def tool(exe: Path, res: Path, folder: Path, lists: list, log: Path, seed: "Path | None" = None, host: bool = True, **extra: str) -> dict:
+def tool_env(res: Path, folder: Path, seed: "Path | None", host: bool, extra: dict) -> dict:
+    """The pipeline-archive mode's environment as build_app.mac_pipelines (host) or device_pipelines.make (device) sets it,
+    without the shell's own TOTK_ / DM_ settings; extra (a run's own, e.g. TOTK_PAR_RECHECK=1) wins."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(('TOTK_', 'DM_'))}
     env.update(TOTK_SHADER_CACHE=str(folder), TOTK_SHADER_SEED_DIR=str(seed or res / 'build/shader-seed'), TOTK_DEBUG_LOG='1',
-               TOTK_PAR_RECHECK='0', **{k: str(v) for k, v in extra.items()})
+               TOTK_PAR_RECHECK='0')
     if host:
         env['TOTK_PIPELINE_ARCHIVE_HOST'] = '1'
+    env.update({k: str(v) for k, v in extra.items()})
+    return env
+
+
+def tool(exe: Path, res: Path, folder: Path, lists: list, log: Path, seed: "Path | None" = None, host: bool = True, **extra: str) -> dict:
+    env = tool_env(res, folder, seed, host, extra)
     before, t0 = pmset(), time.time()
     with open(log, 'w') as f:
         r = subprocess.run([str(exe), 'rewritten/botw190', 'pipeline-archive', *map(str, lists)], cwd=res, env=env, stdout=f, stderr=subprocess.STDOUT)
