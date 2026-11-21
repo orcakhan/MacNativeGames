@@ -1,4 +1,5 @@
-// Ocarina of Time on the Mac: which library and entry each game function was made from, for the Metal 4 pipeline archive
+// Ocarina of Time and Breath of the Wild 1.9.0 on the Mac (not iOS / visionOS: TARGET_OS_IPHONE is 1 there too): which
+// library and entry each game function was made from, for the Metal 4 pipeline archive
 // (nvn_pso4.h). MTL4Compiler builds a pipeline from function descriptors (a library and an entry name), not from MTLFunction
 // objects, so every game function a pipeline can be built from is made through lib_fn, which notes them. A function with no
 // note (a diagnostic override, the mesh stages, a host helper) keeps the MTLDevice path and the old archive.
@@ -8,7 +9,9 @@
 #import <Metal/Metal.h>
 #include <os/lock.h>
 
-#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* Breath of the Wild 1.9.0 since 2026-11-21 (docs/experiments/2026-11-botw-mtl4-archive: phase 0 measures it; Tears of the
+   Kingdom and Breath of the Wild 1.6.0 keep the old archive until measured). tests/test_botw_pso4_gate.py. */
+#if (defined(GAME_OOT) || defined(GAME_BOTW190)) && !TARGET_OS_IPHONE
 #define PSO4_BUILT 1
 static os_unfair_lock g_fn4_lk = OS_UNFAIR_LOCK_INIT;
 /* function -> MTL4LibraryFunctionDescriptor. Weak keys: a variant function a pipeline no longer needs goes as before; the

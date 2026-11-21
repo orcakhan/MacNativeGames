@@ -1,4 +1,5 @@
-// Ocarina of Time on the Mac: the Metal 4 pipeline archive (2026-11-17, user: "好 开始做").
+// Ocarina of Time on the Mac: the Metal 4 pipeline archive (2026-11-17, user: "好 开始做"). Breath of the Wild 1.9.0 on the
+// Mac too since 2026-11-21 (the gate: nvn_pso4_fn.h PSO4_BUILT).
 // Why: the old archive (MTLBinaryArchive, totk_pipeline_archive.h) keeps every pipeline's whole description in its file and
 // Metal copies them all out when it opens one, so a file can hold only a few pipelines: 8 a file on the Mac, 4,033 files in
 // the App. Probe (scratch/runs/2026-11/par-probe, M4, 1,024 pipelines in one file): opened +782 MB through the old API,
