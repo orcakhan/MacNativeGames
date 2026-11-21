@@ -112,6 +112,26 @@ class BundleId(unittest.TestCase):
             archive.with_bundle_id(b'<string>org.macnativegames.totk-native</string>', 7)   # the games' id is never renamed into
 
 
+class Runner(unittest.TestCase):
+    def test_arms_alternate_which_goes_first(self):
+        import run
+        self.assertEqual(run.arm_order(3), [('old', 'new'), ('new', 'old'), ('old', 'new')])
+        self.assertEqual(''.join(run.game_order(3)), 'ABABAB')
+
+    def test_drop_cache_removes_only_a_test_bundle_ids_folder(self):
+        import run
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            for name in ('org.macnativegames.totk-native', 'org.macnativegames.mtl4test-0007', 'org.macnativegames.mtl4test-0008'):
+                (root / name / 'com.apple.metal').mkdir(parents=True)
+            run.drop_cache(7, root)
+            self.assertEqual(sorted(p.name for p in root.iterdir()),
+                             ['org.macnativegames.mtl4test-0008', 'org.macnativegames.totk-native'])
+            for bad in (-1, 10000):
+                with self.assertRaises(ValueError):
+                    run.drop_cache(bad, root)
+
+
 class Leftover(unittest.TestCase):
     def test_leftover_classes(self):
         p = json.loads((FIX / 'pipelines.json').read_text())
