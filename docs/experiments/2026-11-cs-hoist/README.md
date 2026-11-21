@@ -1,7 +1,7 @@
 # Experimento: dispatches de compute antes do render pass (porte do `cs_hoist_try` do nxnative)
 
 Branch `orcakhan/nxnative`, 19 a 21/11/2026. **Estado: guardado, não enviado à main.** O ganho medido foi pequeno
-demais para o custo de manter o código; falta uma medição (cena com partículas) para decidir de vez.
+demais para o custo de manter o código, também ao lado de uma fogueira (−1,1% de GPU, 21/11).
 
 ## O que é
 
@@ -46,6 +46,13 @@ envio mensurável. ~39% dos exames movem um dispatch.
 **Imagem:** numa sessão só, alternando `flag cs_hoist`, a diferença entre ligado e desligado (RMSE 1,43-1,45%) não passa
 do ruído de tempo com a mesma configuração (1,66-1,74%); frames consecutivos 0,12-0,16%. Capturas de sessões separadas
 não servem (10-19% entre duas rodadas iguais: câmera e nuvens mudam a cada abertura).
+
+**Fogueira (21/11, código final c0052f1e, Mac M5 Pro, fps travado em 60, uma sessão com `scripts/flagab.sh`,
+off on on off off on on off, 30 s cada):** GPU p50 desligado 9,16 ms, ligado 9,06 ms (−0,10 ms, −1,1%); por segmento
+9,32 / 9,07 / 9,19 / 8,98 / 9,02 / 8,86 / 9,13 / 9,32 (a variação entre segmentos, ±0,2 ms, é do tamanho do efeito);
+frame 16,71 ms nos dois. O porte moveu um dispatch em 93% dos exames; a regra nova das cópias de uniforms recusou só 2;
+`depth_written` parou 7%. Ou seja: a fogueira move mais dispatches, mas cada um vale pouco. **Resultado: perto de 1% de
+novo → pelo critério abaixo, não enviar.**
 
 ## Por que o ganho é pequeno
 
