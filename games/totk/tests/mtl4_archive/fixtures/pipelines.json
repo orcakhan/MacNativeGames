@@ -1,0 +1,621 @@
+{
+ "compute": {
+  "compute_function": "alias:FIXTURE#main0",
+  "contention_relief": "Automatic",
+  "forward_progress_usage": "Automatic",
+  "max_call_stack_depth": 1,
+  "max_total_threads_per_threadgroup": 0,
+  "optimize_for_persistent_kernel": false,
+  "support_adding_binary_functions": false,
+  "support_indirect_command_buffers": false,
+  "threadgroup_size_is_multiple_of_thread_execution_width": false
+ },
+ "depth_only": {
+  "alpha_to_coverage_enabled": false,
+  "alpha_to_one_enabled": false,
+  "color_attachments": [
+   {
+    "alpha_blend_operation": "Add",
+    "blending_enabled": true,
+    "destination_alpha_blend_factor": "OneMinusSourceAlpha",
+    "destination_rgb_blend_factor": "OneMinusSourceAlpha",
+    "pixel_format": "RGBA16Float",
+    "rgb_blend_operation": "Add",
+    "source_alpha_blend_factor": "Zero",
+    "source_rgb_blend_factor": "SourceAlpha",
+    "write_mask": "All"
+   }
+  ],
+  "depth_attachment_pixel_format": "Depth32Float",
+  "input_primitive_topology": "Unspecified",
+  "max_fragment_call_stack_depth": 1,
+  "max_tessellation_factor": 16,
+  "max_vertex_amplification_count": 1,
+  "max_vertex_call_stack_depth": 1,
+  "raster_sample_count": 1,
+  "rasterization_enabled": true,
+  "stencil_attachment_pixel_format": "Invalid",
+  "support_adding_fragment_binary_functions": false,
+  "support_adding_vertex_binary_functions": false,
+  "support_indirect_command_buffers": false,
+  "tessellation_control_point_index_type": "None",
+  "tessellation_factor_format": "Half",
+  "tessellation_factor_scale_enabled": false,
+  "tessellation_factor_step_function": "Constant",
+  "tessellation_output_winding_order": "Clockwise",
+  "tessellation_partition_mode": "Pow2",
+  "vertex_descriptor": {
+   "attributes": [
+    {
+     "buffer_index": 16,
+     "format": "Half4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UShort2Normalized",
+     "offset": 16
+    },
+    {
+     "buffer_index": 16,
+     "format": "Int1010102Normalized",
+     "offset": 8
+    },
+    {
+     "buffer_index": 0,
+     "format": "Invalid",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UChar4Normalized",
+     "offset": 20
+    },
+    {
+     "buffer_index": 17,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 18,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 19,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 20,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 21,
+     "format": "Float4",
+     "offset": 0
+    }
+   ],
+   "layouts": [
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 28
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    }
+   ]
+  },
+  "vertex_function": "alias:FIXTURE#main0"
+ },
+ "runtime_lib": {
+  "alpha_to_coverage_enabled": false,
+  "alpha_to_one_enabled": false,
+  "color_attachments": [
+   {
+    "alpha_blend_operation": "Add",
+    "blending_enabled": true,
+    "destination_alpha_blend_factor": "OneMinusSourceAlpha",
+    "destination_rgb_blend_factor": "OneMinusSourceAlpha",
+    "pixel_format": "RGBA16Float",
+    "rgb_blend_operation": "Add",
+    "source_alpha_blend_factor": "Zero",
+    "source_rgb_blend_factor": "SourceAlpha",
+    "write_mask": "All"
+   }
+  ],
+  "depth_attachment_pixel_format": "Depth32Float",
+  "fragment_function": "alias:MISSING#main0",
+  "input_primitive_topology": "Unspecified",
+  "max_fragment_call_stack_depth": 1,
+  "max_tessellation_factor": 16,
+  "max_vertex_amplification_count": 1,
+  "max_vertex_call_stack_depth": 1,
+  "raster_sample_count": 1,
+  "rasterization_enabled": true,
+  "stencil_attachment_pixel_format": "Invalid",
+  "support_adding_fragment_binary_functions": false,
+  "support_adding_vertex_binary_functions": false,
+  "support_indirect_command_buffers": false,
+  "tessellation_control_point_index_type": "None",
+  "tessellation_factor_format": "Half",
+  "tessellation_factor_scale_enabled": false,
+  "tessellation_factor_step_function": "Constant",
+  "tessellation_output_winding_order": "Clockwise",
+  "tessellation_partition_mode": "Pow2",
+  "vertex_descriptor": {
+   "attributes": [
+    {
+     "buffer_index": 16,
+     "format": "Half4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UShort2Normalized",
+     "offset": 16
+    },
+    {
+     "buffer_index": 16,
+     "format": "Int1010102Normalized",
+     "offset": 8
+    },
+    {
+     "buffer_index": 0,
+     "format": "Invalid",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UChar4Normalized",
+     "offset": 20
+    },
+    {
+     "buffer_index": 17,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 18,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 19,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 20,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 21,
+     "format": "Float4",
+     "offset": 0
+    }
+   ],
+   "layouts": [
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 28
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    }
+   ]
+  },
+  "vertex_function": "alias:MISSING#main0"
+ },
+ "shader_lib": {
+  "alpha_to_coverage_enabled": false,
+  "alpha_to_one_enabled": false,
+  "color_attachments": [
+   {
+    "alpha_blend_operation": "Add",
+    "blending_enabled": true,
+    "destination_alpha_blend_factor": "OneMinusSourceAlpha",
+    "destination_rgb_blend_factor": "OneMinusSourceAlpha",
+    "pixel_format": "RGBA16Float",
+    "rgb_blend_operation": "Add",
+    "source_alpha_blend_factor": "Zero",
+    "source_rgb_blend_factor": "SourceAlpha",
+    "write_mask": "All"
+   }
+  ],
+  "depth_attachment_pixel_format": "Depth32Float",
+  "fragment_function": "alias:FIXTURE#main0",
+  "input_primitive_topology": "Unspecified",
+  "max_fragment_call_stack_depth": 1,
+  "max_tessellation_factor": 16,
+  "max_vertex_amplification_count": 1,
+  "max_vertex_call_stack_depth": 1,
+  "raster_sample_count": 1,
+  "rasterization_enabled": true,
+  "stencil_attachment_pixel_format": "Invalid",
+  "support_adding_fragment_binary_functions": false,
+  "support_adding_vertex_binary_functions": false,
+  "support_indirect_command_buffers": false,
+  "tessellation_control_point_index_type": "None",
+  "tessellation_factor_format": "Half",
+  "tessellation_factor_scale_enabled": false,
+  "tessellation_factor_step_function": "Constant",
+  "tessellation_output_winding_order": "Clockwise",
+  "tessellation_partition_mode": "Pow2",
+  "vertex_descriptor": {
+   "attributes": [
+    {
+     "buffer_index": 16,
+     "format": "Half4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UShort2Normalized",
+     "offset": 16
+    },
+    {
+     "buffer_index": 16,
+     "format": "Int1010102Normalized",
+     "offset": 8
+    },
+    {
+     "buffer_index": 0,
+     "format": "Invalid",
+     "offset": 0
+    },
+    {
+     "buffer_index": 16,
+     "format": "UChar4Normalized",
+     "offset": 20
+    },
+    {
+     "buffer_index": 17,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 18,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 19,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 20,
+     "format": "Float4",
+     "offset": 0
+    },
+    {
+     "buffer_index": 21,
+     "format": "Float4",
+     "offset": 0
+    }
+   ],
+   "layouts": [
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 0
+    },
+    {
+     "step_function": "PerVertex",
+     "step_rate": 1,
+     "stride": 28
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    },
+    {
+     "step_function": "PerInstance",
+     "step_rate": 1,
+     "stride": 16
+    }
+   ]
+  },
+  "vertex_function": "alias:FIXTURE#main0"
+ }
+}

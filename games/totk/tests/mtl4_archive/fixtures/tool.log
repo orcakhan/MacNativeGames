@@ -1,0 +1,5 @@
+[dm] [nvn-mtl] 管线存档：打开了 0 个文件
+[dm] [nvn-mtl] 【红】Metal 4 管线存档：捕获时编不了 abc（XPC_ERROR_CONNECTION_INTERRUPTED），编译服务重启后捕获进新的一期再编
+[dm] [nvn-mtl] Metal 4 管线存档：写了 2000 条进 key1-2000.mtl4a（812 ms；这次共 2000 条）
+[dm] [nvn-mtl] Metal 4 管线存档：取 17000 条、编 712 条（写进 9 个文件 712 条），走旧路 183 条，捕获时让出 2 次（这些没存进去）
+{"render": 17712, "compute": 176, "mesh": 0, "kept": 0, "failed": 0, "seconds": 61.3, "write_failed": 0, "arch": "applegpu_g17s", "libs": "/x/build/shader-libs"}
