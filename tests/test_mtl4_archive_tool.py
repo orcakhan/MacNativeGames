@@ -135,6 +135,17 @@ class Runner(unittest.TestCase):
         self.assertNotIn('TOTK_PIPELINE_ARCHIVE_HOST', device)
         self.assertEqual((device['TOTK_PAR_RECHECK'], device['TOTK_SHADER_SEED_DIR']), ('0', '/seed'))
 
+    def test_a_run_must_load_the_apps_compiled_libraries(self):
+        # run from anywhere but the app's build folder, the binary finds no shader-libs beside it (nvn_mtl.m exe_rel) and
+        # compiles every shader from source (2026-11-21: 8,401 of them): every pipeline then comes from a runtime library,
+        # and both time and coverage are wrong
+        import run
+        res = Path('/app/Contents/Resources/totk')
+        run.check_libs({'libs': '/app/Contents/Resources/totk/build/shader-libs'}, res)
+        for bad in ('', '/elsewhere/shader-libs'):
+            with self.assertRaises(ValueError):
+                run.check_libs({'libs': bad}, res)
+
     def test_drop_cache_removes_only_a_test_bundle_ids_folder(self):
         import run
         with tempfile.TemporaryDirectory() as t:

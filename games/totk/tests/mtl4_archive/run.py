@@ -99,15 +99,32 @@ def tool_env(res: Path, folder: Path, seed: "Path | None", host: bool, extra: di
     return env
 
 
+def check_libs(report: dict, res: Path):
+    """The Mac mode must have loaded the app's compiled shader libraries (the report's "libs", as build_app.mac_pipelines
+    checks it), not compiled every shader from source."""
+    if report.get('libs') != str(res / 'build/shader-libs'):
+        raise ValueError(f"the run did not load the app's shader libraries: libs={report.get('libs')!r}")
+
+
 def tool(exe: Path, res: Path, folder: Path, lists: list, log: Path, seed: "Path | None" = None, host: bool = True, **extra: str) -> dict:
+    """One run of the pipeline-archive mode. As build_app.run_outside_bundle does, the binary is started through a link in
+    the app's build folder: it finds shader-libs and the shader map beside the path it was started by (nvn_mtl.m exe_rel),
+    while the file itself stays outside the app."""
     env = tool_env(res, folder, seed, host, extra)
+    link = res / 'build' / exe.name
+    link.unlink(missing_ok=True); link.symlink_to(exe)
     before, t0 = pmset(), time.time()
-    with open(log, 'w') as f:
-        r = subprocess.run([str(exe), 'rewritten/botw190', 'pipeline-archive', *map(str, lists)], cwd=res, env=env, stdout=f, stderr=subprocess.STDOUT)
+    try:
+        with open(log, 'w') as f:
+            r = subprocess.run([str(link), 'rewritten/botw190', 'pipeline-archive', *map(str, lists)], cwd=res, env=env, stdout=f, stderr=subprocess.STDOUT)
+    finally:
+        link.unlink(missing_ok=True)
     wall = time.time() - t0
     text = log.read_text(encoding='utf-8', errors='replace')
     m4 = host and extra.get('TOTK_PSO_MTL4') != '0'
     out = archive.parse_tool(text, expect_m4=m4)
+    if host:
+        check_libs(out['report'], res)
     out.update(wall_s=round(wall, 2), exit=r.returncode, power=before, power_changed=pmset() != before, log=str(log))
     return out
 
