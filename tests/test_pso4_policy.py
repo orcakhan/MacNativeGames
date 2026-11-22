@@ -67,6 +67,18 @@ class Pso4UsesTheRules(unittest.TestCase):
         self.assertIn('par4_recapture(got, gotd, tries + 1, title)', chunk)
         self.assertIn('par4_resplit(got, gotd, title)', chunk)
 
+    def test_packaging_spreads_its_blocks_and_only_packaging(self):
+        # the spread and the larger block are for the pipeline-archive mode with the Metal 4 archive (captures wait on
+        # each other there); the first-start fill before the title, the old archive, device mode and other games keep
+        # the sorted 512-row blocks
+        mtl = (NVN / 'nvn_mtl.m').read_text(encoding='utf-8')
+        fill = body(mtl, 'static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t done)')
+        self.assertIn('par4_spread(block)', fill)
+        self.assertIn('PAR4_FILL_BLOCK', fill)
+        self.assertRegex(fill, r'g_compute_archive_tool && par4_on\(\)')
+        self.assertIn('#ifdef PSO4_BUILT', fill)
+        self.assertIn('[todo sortUsingSelector:@selector(compare:)]', fill)   # still sorted first: shaders load once per block
+
 
 if __name__ == '__main__':
     unittest.main()

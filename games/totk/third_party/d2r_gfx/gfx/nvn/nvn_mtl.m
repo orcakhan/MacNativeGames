@@ -12339,9 +12339,18 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         MLOG("管线存档：后台填充开始（%lu 份管线清单 %lu 条，%zu 个线程，每条建完写成自己的文件就丢）",
              (unsigned long)paths.count, (unsigned long)todo.count, workers);
-        NSUInteger rows = todo.count;
-        for (NSUInteger at = 0; at < rows; at += WARM_BLOCK) @autoreleasepool {
-            NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, rows - at))];
+        NSUInteger rows = todo.count, block_rows = WARM_BLOCK;
+#ifdef PSO4_BUILT
+        /* Packaging with the Metal 4 archive (Mac): captures sharing a vertex function wait on each other (fn4_claim), and
+           sorted rows come one vertex shader after another, so the 8 threads mostly waited (Breath of the Wild 1.9.0:
+           155.8 s, 72.7 s with the guard off). Period-sized blocks, each spread by vertex function (nvn_pso4_policy.h
+           par4_spread, PAR4_FILL_BLOCK): about 62 s. Still sorted first, so a block's shaders load once and a vertex
+           shader's rows stay in one file. The first-start fill, the old archive and iOS keep this as it was. */
+        int spread = g_compute_archive_tool && par4_on();
+        if (spread) block_rows = PAR4_FILL_BLOCK;
+#endif
+        for (NSUInteger at = 0; at < rows; at += block_rows) @autoreleasepool {
+            NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN(block_rows, rows - at))];
             NSUInteger processed = block.count;
             uint64_t hits = 0;
             block = warm_fill_pending(block, g_par_recheck, mtk_device_compiles() && !getenv("TOTK_SHADER_DEVICE_LIBS"),
@@ -12350,6 +12359,9 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
                     return have;
                 }, &hits);
             atomic_fetch_add(&fc->nhave, hits);
+#ifdef PSO4_BUILT
+            if (spread) block = par4_spread(block);
+#endif
             if (workers > 1) {
                 warm_load_rows(block, dict);
                 __block _Atomic size_t next = 0;
