@@ -132,11 +132,49 @@ Medido como o app leva (`mac_pipeline_files`):
 - **Custo do passo do título:** dos ~150 s do Metal 4, ~15 s são o passo que põe as linhas de antes do título num
   arquivo pequeno (ver "Achados").
 - **Cache quente:** o cache do Metal quase não ajuda o compilador que captura (148 s quente contra 155 s frio).
-- **Causa não verificada.** Hipóteses:
-  - o compilador ligado ao serializador (`CaptureBinaries`) compila sem usar o cache;
-  - a espera entre capturas que usam a mesma função de vértice (`fn4_claim`; nenhuma desistiu de esperar,
-    `gave_up` 0).
-- **Para quem empacota:** um build ou update do BotW leva +81 s frio e +121 s quente nesse passo. O OOT já paga isso.
+
+### Por que gerar pelo Metal 4 é mais lento (investigado 2026-11-21)
+
+Medido numa amostra fixa de 2.000 linhas `R` do `pso_manifest.tsv`, com a CPU do processo e dos `MTLCompilerService`
+amostrada a cada 0,5 s. As variantes vieram de um binário de diagnóstico com duas chaves de ambiente, que **não estão no
+branch**: `TOTK_PSO4_DIAG_NOCLAIM` (sem `fn4_claim`) e `TOTK_PSO4_DIAG_PLAIN` (compilador Metal 4 sem serializador, nada
+capturado).
+
+| Variante | Frio | Quente | CPU do serviço (frio / quente) |
+|---|---|---|---|
+| Arquivo antigo | 9,5 s | 5,2 s | 456% / 183% |
+| Metal 4, como está | 15,8 s | 15,1 s | 257% / 280% |
+| Metal 4 sem `fn4_claim` | 10,3 s | 9,8 s | 498% / 518% |
+| Metal 4 sem captura | 9,5 s | **0,6 s** | 321% / 0% |
+
+1. **Compilar com captura não usa o cache do Metal.** Sem captura, o compilador Metal 4 acha tudo no cache (0,6 s, CPU
+   do serviço zero). Com o serializador em `CaptureBinaries`, cada pipeline é compilado de novo, com cache quente ou frio.
+   É comportamento do Metal, não do nosso código: o serializador precisa do código que ele mesmo gerou.
+2. **`fn4_claim` custa ~1/3 do tempo.**
+   - O que é: duas capturas que usam a mesma função de vértice nunca rodam juntas, e a thread que não consegue a vez fica
+     parada esperando.
+   - Quanto custa: sem isso, o frio cai de 15,8 para 10,3 s, e o serviço usa o dobro de núcleos.
+   - Por que existe: o Metal trava quando duas capturas leem a mesma função ao mesmo tempo (nxnative #815). Tirar não é
+     um conserto.
+3. **Sem captura e com cache frio, o compilador Metal 4 custa o mesmo que o antigo (9,5 s).** O compilador em si não é
+   mais lento.
+
+**O caso que mais acontece, rebuild ou update sobre a pasta anterior** (`TOTK_PAR_RECHECK=1`, o que o `build_app.py`
+faz quando o binário muda): as chaves que já estão no `.mtl4a` são achadas, não compiladas.
+
+| Rebuild sobre a pasta anterior | Cache do Metal frio | Quente |
+|---|---|---|
+| Arquivo antigo | 22,4 s | 4,1 s |
+| Metal 4 | 19,3 s | 17,1 s |
+
+Dos 17,1 s do Metal 4 quente, ~14,5 s são o passo do título, que recompila as 1.453 linhas a cada empacotamento por causa
+do `PAR4_SMALL` (ver "Achados") e, por capturar, nunca usa o cache. Sem esse defeito, o rebuild Metal 4 ficaria perto do
+antigo. Isso é estimado, não medido.
+
+**Para quem empacota, hoje:**
+- primeiro build, ou primeira atualização a partir do arquivo antigo: +81 s (155 contra 74,5 s);
+- rebuilds seguintes: +13 s com cache quente (17 contra 4 s), quase todos do passo do título.
+- O OOT já paga isso.
 
 ## Morte do serviço de compilação
 
