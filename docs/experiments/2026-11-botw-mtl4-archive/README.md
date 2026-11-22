@@ -353,9 +353,51 @@ medido de novo.
   partida, dão ~3,5–4 s (a do pacote ordenado, antes dos consertos: 3,5 s), e as do A/B, com o cache preparado, ~10 s.
   Um A/B de tempos com este pacote não foi feito.
 
+## Regressão no jogo, com o pacote feito do zero (2026-11-22)
+
+- **Pergunta:** o Metal 4 piora energia, fps, engasgos ou carregamento?
+- **Como:** app A (o mesmo binário com `TOTK_PSO_MTL4=0`, arquivo antigo) contra app B (Metal 4, pacote feito do zero).
+  - Uma abertura de preparo de cada um e depois ABABABAB, na tomada, sob `caffeinate -d`.
+  - Mesmas cópias, mesmo roteiro e fechamento de `run.py game`.
+  - Janela de jogo: de 20 a 115 s depois do início do carregamento do save.
+  - Energia: só do GPU, lida do IOReport do chip sem root (`regress/sampler.m`); os canais de CPU vêm zerados neste
+    Mac, então a CPU é o tempo de CPU do processo do jogo (`@proc_cpu_ms`).
+  - Scripts e números por abertura em `regress/` (`regress.py`, `reanalyse.py`, `rows-2026-11-22.json`).
+- **Título:** contado de quando os dados do jogo montam. O jogo conferiu os 15 GB de dados (SHA-256, ~5,4 s) em todas
+  estas aberturas; na abertura avulsa de antes, não. Era essa a diferença de 4 contra 10 s, não o arquivo de pipelines.
+- **Relógio:** o relógio dos quadros (`@t_s`) começa depois da conferência dos dados; a análise alinha os dois pelas
+  linhas de quadro longo, que citam os dois tempos.
+
+| Mediana de 4 aberturas | Antigo (A) | Metal 4 (B) | B − A |
+|---|---|---|---|
+| Título, a partir dos dados montados | 4,54 s | 4,23 s | −6,8% |
+| Carregamento: começo do save → mundo desenhado | 2,79 s | 2,78 s | igual |
+| GPU, watts | 17,1 W | 16,3 W | −4,7% |
+| GPU, energia por quadro | 137–144 mJ | 136–137 mJ | igual ou menor |
+| GPU, ms por quadro p50 / p95 | 5,44 / 5,98 | 5,45 / 5,99 | igual |
+| CPU do jogo, ms por segundo | 3.128 | 3.118 | igual |
+| CPU do jogo, ms por quadro | 24,8–26,3 | 25,6–26,3 | ~+2%, dentro da variação |
+| Quadros acima de 33,3 ms | 0 | 0 | igual |
+| Pior quadro | 18,8–31,4 ms | 17,8–23,3 ms | igual ou melhor |
+| Pipelines e bibliotecas criados no jogo | 0 | 0 | igual |
+| Pico de memória | 4.533 MB | 4.095 MB | −438 MB |
+| **fps** | **123,9** | **119,4** | **−3,6%, não resolvido** |
+
+- **Sessão do B:** as 5 aberturas acharam 18.249 chaves e compilaram 0. Todas saíram com código 0, na tomada.
+- **fps, por que não está resolvido:**
+  - Em ordem: A 126,9, B 119,9, A 125,7, B 125,4, A 122,0, B 118,2, A 117,9, B 118,9. O fps cai ao longo da
+    sequência nos dois (a máquina esquenta), e A sempre abriu primeiro em cada par.
+  - Comparando cada B com a média dos A vizinhos: −5,0%, +1,2%, −1,5%, +0,9% (média −1,1%), quase tudo da primeira.
+  - A diferença está dentro da variação de cada app (A 117,9–126,9; B 118,2–125,4).
+  - Próximo passo: a mesma medição com o B primeiro (`regress.py … 4 <pasta> BA`) e juntar as duas.
+- **Dados brutos** (logs, quadros e energia de cada abertura, comprimidos): fora do git, na pasta do ledger desta
+  branch (`.superpowers/sdd/2026-11-21-botw-mtl4-archive/regress-2026-11-22-raw`).
+
 ## O que não foi medido
 
-- Um A/B de tempos de jogo com o pacote feito do zero (só uma abertura, acima).
+- O fps com a ordem invertida (B primeiro), para separar o aquecimento da máquina de uma diferença real de ~3%.
+- Watts da CPU e do pacote todo (precisa de `sudo powermetrics`).
+- Outras cenas além do roteiro de ~95 s num lugar só.
 - O empacotamento do OOT com os consertos.
 - Macs mais lentos (M1, M2) e app em disco externo, onde o OOT ganhou em tempo.
 - A migração do lado do jogador: as chaves dos arquivos antigos da própria máquina, recompiladas na primeira abertura.
