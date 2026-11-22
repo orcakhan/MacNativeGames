@@ -384,18 +384,47 @@ medido de novo.
 | **fps** | **123,9** | **119,4** | **−3,6%, não resolvido** |
 
 - **Sessão do B:** as 5 aberturas acharam 18.249 chaves e compilaram 0. Todas saíram com código 0, na tomada.
-- **fps, por que não está resolvido:**
-  - Em ordem: A 126,9, B 119,9, A 125,7, B 125,4, A 122,0, B 118,2, A 117,9, B 118,9. O fps cai ao longo da
-    sequência nos dois (a máquina esquenta), e A sempre abriu primeiro em cada par.
-  - Comparando cada B com a média dos A vizinhos: −5,0%, +1,2%, −1,5%, +0,9% (média −1,1%), quase tudo da primeira.
-  - A diferença está dentro da variação de cada app (A 117,9–126,9; B 118,2–125,4).
-  - Próximo passo: a mesma medição com o B primeiro (`regress.py … 4 <pasta> BA`) e juntar as duas.
+- **fps nesta rodada:** em ordem, A 126,9, B 119,9, A 125,7, B 125,4, A 122,0, B 118,2, A 117,9, B 118,9. O fps cai
+  ao longo da sequência nos dois (a máquina esquenta), e A sempre abriu primeiro em cada par. Daí a segunda rodada.
+
+### Segunda rodada, com o B primeiro em cada par (2026-11-22)
+
+- Mesma medição, ordem BABABABA (`regress.py … 4 <pasta> BA`); números por abertura em `regress/rows-2026-11-22-ba.json`.
+
+| Mediana de 4 aberturas | Antigo (A) | Metal 4 (B) | B − A |
+|---|---|---|---|
+| Título, a partir dos dados montados | 4,66 s | 4,28 s | −8,2% |
+| Carregamento do save | 2,82 s | 2,75 s | −2,6% |
+| GPU, watts | 16,6 W | 16,7 W | igual |
+| GPU, ms por quadro p50 / p95 | 5,57 / 6,12 | 5,58 / 6,12 | igual |
+| CPU do jogo, ms por segundo | 3.141 | 3.097 | −1,4% |
+| Quadros acima de 33,3 ms / pipelines criados no jogo | 0 / 0 | 0 / 0 | igual |
+| Pico de memória | 4.570 MB | 4.168 MB | −402 MB |
+| fps | 114,8 | 113,6 | −1,1% |
+
+- Em ordem: B 119,3, A 120,2, B 115,6, A 116,7, B 111,6, A 113,0, B 111,2, A 111,0. Todas saíram com código 0; as 5
+  do B acharam 18.249 chaves e compilaram 0.
+
+### fps, juntando as duas rodadas
+
+- **Pares (B − A, %):** rodada 1 (A primeiro) −5,5, −0,3, −3,2, +0,9; rodada 2 (B primeiro) −0,8, −1,0, −1,2, +0,2.
+  - A ordem pesa contra quem abre depois; nas duas ordens juntas ela se cancela: média **−1,35%** (~1,5 fps a ~118).
+  - Desvio dos 8 pares 2,1%; intervalo de 95% da diferença: **−3,1% a +0,4%**. Não dá para separar de zero (t ≈ −1,9).
+- **O que o jogo desenhou** (`regress/perframe.py`, medianas por quadro na janela de jogo):
+  - Nas aberturas do B o jogo emitiu em média 2,1% mais draws (rodada 2: +3,6, +3,2, +8,7, +2,2%). Quantos draws o
+    jogo emite não depende do arquivo de pipelines: nenhum pipeline foi criado em jogo nos dois.
+  - O tempo de trabalho do quadro acompanha os draws (correlação 0,51 entre os pares). Trabalho por draw: −0,4% em
+    média (desvio 3,4%); instruções submetidas por draw: −0,5%. Estimada na mesma quantidade de draws, a diferença de
+    trabalho fica em +0,95%.
+  - GPU por quadro: +0,3%.
+- **Leitura:** nenhuma regressão mensurável de fps. Se houver, é de no máximo ~3% e, pelo meio, ~1%; parte dela vem de
+  o jogo ter desenhado mais nessas aberturas.
 - **Dados brutos** (logs, quadros e energia de cada abertura, comprimidos): fora do git, na pasta do ledger desta
   branch (`.superpowers/sdd/2026-11-21-botw-mtl4-archive/regress-2026-11-22-raw`).
 
 ## O que não foi medido
 
-- O fps com a ordem invertida (B primeiro), para separar o aquecimento da máquina de uma diferença real de ~3%.
+- Uma diferença de fps abaixo de ~3% (o que 8 pares conseguem separar).
 - Watts da CPU e do pacote todo (precisa de `sudo powermetrics`).
 - Outras cenas além do roteiro de ~95 s num lugar só.
 - O empacotamento do OOT com os consertos.
