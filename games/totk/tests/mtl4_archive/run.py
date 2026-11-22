@@ -234,11 +234,19 @@ def game_env(out: Path, app_res: Path, old: bool, cache_src: Path) -> dict:
     if (SUP / 'gpu-keepalive.txt').is_file():
         shutil.copyfile(SUP / 'gpu-keepalive.txt', out / 'MNG/gpu-keepalive.txt')
     (out / 'input.txt').write_text(''); (out / 'board').mkdir()
+    return launcher_env(out, app_res, old)
+
+
+def launcher_env(out: Path, app_res: Path, old: bool) -> dict:
+    """What app/launcher.m sets for the game (its GPU paths included: without them every launch aborted in
+    h_nvnQueueSubmitCommands after the save loaded), on the copies in out; the shell's own TOTK_ / DM_ settings dropped."""
+    sdir = out / 'MNG/BotW'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('TOTK_', 'DM_'))}
     env.update(TOTK_PROFILE_DIR=str(out / 'profile'), TOTK_SHADER_CACHE=str(out / 'cache'), TOTK_GAME_SLOT_DIR=str(DATA / 'game-slot'),
                TOTK_ROMFS_PROOF_DIR=str(DATA), TOTK_SHARED_FONTS='extracted/firmware/shared-fonts', TOTK_NATIVE_DIR=str(app_res / 'build'),
                TOTK_ROMFS_MODS=str(DATA / 'mods/botw190'), TOTK_CONTROLS=str(sdir / 'controls.txt'), TOTK_PICTURE_MODE=str(sdir / 'picture-mode.txt'),
                TOTK_INPUT_FILE=str(out / 'input.txt'), TOTK_SHADER_CONTRIB=str(out / 'contrib.txt'), TOTK_BOARD_DIR=str(out / 'board'),
+               TOTK_GPU_ALLOW_SUBMIT='1', TOTK_GPU_WIDEN='1', TOTK_GPU_BLOCKRT='1', TOTK_GPU_MIDCLEAR='1',
                TOTK_CLOUD_SAVE_DIR='0', TOTK_SLOT_OWNER='claude', TOTK_SLOT_PURPOSE='mtl4 archive A/B', TOTK_AUTOLOAD='1',
                TOTK_AGENT_IDLE_S='900', TOTK_DEBUG_LOG='1', DM_NVN_TSV=str(out / 'frames.tsv'), DM_NVN_TSV_CALLS='0')
     if old:
@@ -261,7 +269,7 @@ def launch(app: Path, out: Path, old: bool, cache_src: Path, play_s: float) -> d
             if loaded is None and '[autoload] load started' in line:
                 loaded = t
                 route(proc, out / 'input.txt')
-                threading_stop(proc, play_s)
+                threading_stop(proc, play_s, out / 'input.txt')
             if t > 1200 and loaded is None:
                 proc.send_signal(signal.SIGTERM); break
     try:
@@ -293,12 +301,19 @@ def route(proc, input_file: Path):
     threading.Thread(target=run_route, daemon=True).start()
 
 
-def threading_stop(proc, after_s):
+def threading_stop(proc, after_s, input_file: Path):
+    """after_s: the input file's "close" (the window closes as a player's would: frontend.m windowWillClose, which writes
+    the Metal 4 archive's last period and prints its session line); SIGTERM only if the game is still up 30 s later."""
     import threading
+    def close():
+        if proc.poll() is None:
+            with open(input_file, 'a') as f:
+                f.write('close\n')
     def stop():
         if proc.poll() is None:
             proc.send_signal(signal.SIGTERM)
-    t = threading.Timer(after_s, stop); t.daemon = True; t.start()
+    for at, fn in ((after_s, close), (after_s + 30, stop)):
+        t = threading.Timer(at, fn); t.daemon = True; t.start()
 
 
 def cmd_game(a) -> dict:

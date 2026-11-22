@@ -158,6 +158,22 @@ class Runner(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run.check_libs({'libs': bad}, res)
 
+    def test_game_env_sets_what_the_launcher_always_sets(self):
+        # the app's launcher always turns these GPU paths on (app/launcher.m); without them every launch of the test apps
+        # aborted in h_nvnQueueSubmitCommands just after the save loaded (2026-11-21), A and B alike
+        import re
+        import run
+        launcher = (ROOT / 'games/totk/app/launcher.m').read_text(encoding='utf-8')
+        forced = dict(re.findall(r'setenv\("(TOTK_GPU_[A-Z_]+)", "([^"]*)", 1\)', launcher))
+        self.assertTrue(forced)
+        out = Path('/w')
+        env = run.launcher_env(out, Path('/app/res'), old=False)
+        for k, v in forced.items():
+            self.assertEqual(env.get(k), v, k)
+        self.assertNotIn('TOTK_PSO_MTL4', env)
+        self.assertEqual(run.launcher_env(out, Path('/app/res'), old=True)['TOTK_PSO_MTL4'], '0')
+        self.assertEqual((env['TOTK_AGENT_IDLE_S'], env['TOTK_SLOT_OWNER'], env['TOTK_CLOUD_SAVE_DIR']), ('900', 'claude', '0'))
+
     def test_drop_cache_removes_only_a_test_bundle_ids_folder(self):
         import run
         with tempfile.TemporaryDirectory() as t:
