@@ -42,7 +42,7 @@ class CompilerDeath(unittest.TestCase):
         self.assertLess(drop, write.index('par4_publish('))                  # before anything is written
         self.assertLess(drop, write.index('par4_resplit('))                  # and never split into new files
         dropped = write[drop:write.index('return;', drop)]
-        self.assertIn('par4_recapture(keys, descs, 1);', dropped)           # compiled again into a new period
+        self.assertIn('par4_recapture(keys, descs, 1, p->title);', dropped)           # compiled again into a new period
         self.assertNotIn('g_par4_lost', dropped)                             # not given up
         died = body(PSO4, 'static void par4_compiler_died(NSError *e) {')
         self.assertIn('atomic_fetch_add(&g_par4_deaths, 1)', died)
@@ -59,23 +59,23 @@ class CompilerDeath(unittest.TestCase):
 
     def test_a_failed_serialization_counts_as_a_death_when_the_service_died(self):
         write = body(PSO4, 'static void par4_write(Par4Period *p) {')
-        self.assertLess(write.index('par4_compiler_died(why);'), write.index('par4_resplit(keys, descs);'))
+        self.assertLess(write.index('par4_compiler_died(why);'), write.index('par4_resplit(keys, descs, p->title);'))
 
 
 class RecaptureAfterDeath(unittest.TestCase):
     def test_a_recaptured_chunk_the_service_died_under_again_is_compiled_again(self):
-        chunk = body(BUILD, 'static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries) {')
+        chunk = body(BUILD, 'static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries, BOOL title) {')
         self.assertIn('if (!ps) par4_compiler_died(e);', chunk)             # its own compiles report a death
         again = chunk.index('if (atomic_load(&g_par4_deaths) != q->deaths)')
         self.assertLess(chunk.index('dispatch_apply('), again)               # after its compiles return
         self.assertLess(again, chunk.index('par4_publish('))                 # before it is written
-        self.assertIn('par4_recapture(got, gotd, tries + 1);', chunk[again:chunk.index('par4_publish(')])
+        self.assertIn('par4_recapture(got, gotd, tries + 1, title);', chunk[again:chunk.index('par4_publish(')])
 
     def test_recapture_is_bounded(self):
-        recapture = body(BUILD, 'static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries) {')
+        recapture = body(BUILD, 'static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries, BOOL title) {')
         self.assertIn('tries > PAR4_RECAPTURE_TRIES', recapture)
         self.assertIn('atomic_fetch_add(&g_par4_lost, keys.count)', recapture)
-        self.assertIn('par4_capture_chunk_n(keys, descs, tries);', recapture)
+        self.assertIn('par4_capture_chunk_n(keys, descs, tries, title);', recapture)
 
     def test_the_pipeline_that_met_the_death_is_captured_again(self):
         make = body(BUILD, 'static id par4_make(int kind, id desc4, NSString *key)')

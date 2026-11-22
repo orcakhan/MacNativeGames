@@ -74,23 +74,23 @@ static void fn4_release(uint64_t id) {
    compiled where it is drawn, as before the archive had it. */
 /* On par4_queue: the pipelines (keys, their Metal 4 descriptions) compiled into a period of their own and written; a write
    that fails is done again in halves (par4_resplit). */
-static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries);
-static void par4_capture_chunk(NSArray<NSString *> *k, NSArray *d) { par4_capture_chunk_n(k, d, 0); }
+static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries, BOOL title);
+static void par4_capture_chunk(NSArray<NSString *> *k, NSArray *d, BOOL title) { par4_capture_chunk_n(k, d, 0, title); }
 /* On par4_queue: a period dropped because the compiler service died since it began (par4_write), or a chunk the service
    died under again: its pipelines compiled again into a new period (the service restarts on the next request), at most
    PAR4_RECAPTURE_TRIES times; a pipeline whose own compile kills the service is not among them (it was never captured). */
 #define PAR4_RECAPTURE_TRIES 4
-static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries) {
+static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries, BOOL title) {
     if (!keys.count) return;
     if (keys.count != descs.count || tries > PAR4_RECAPTURE_TRIES) {
         atomic_fetch_add(&g_par4_lost, keys.count);
         MLOG("【红】Metal 4 管线存档：编译服务又崩溃了 %d 次，%lu 条不存（画到时现编）", tries - 1, (unsigned long)keys.count);
         return;
     }
-    par4_capture_chunk_n(keys, descs, tries);
+    par4_capture_chunk_n(keys, descs, tries, title);
 }
-static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries) {
-    Par4Period *q = par4_new_period(g_dev);
+static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries, BOOL title) {
+    Par4Period *q = par4_new_period(g_dev, title);
     if (!q) { atomic_fetch_add(&g_par4_lost, k.count); return; }
     NSMutableArray<NSString *> *got = [NSMutableArray array]; NSMutableArray *gotd = [NSMutableArray array];
     NSLock *lk = [NSLock new];
@@ -114,7 +114,7 @@ static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries) 
     } });
     if (atomic_load(&g_par4_deaths) != q->deaths) {   // the service died under these compiles, or under any other since q began
         par4_release(q);
-        par4_recapture(got, gotd, tries + 1);
+        par4_recapture(got, gotd, tries + 1, title);
         return;
     }
     NSError *why = nil;
@@ -122,27 +122,25 @@ static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries) 
     par4_release(q);
     if (!ok) {
         if (atomic_fetch_add(&g_par4_failed, 1) < 64) MLOG("【红】Metal 4 管线存档：%lu 条写不了（%s），对半拆开再存", (unsigned long)got.count, why.localizedDescription.UTF8String ?: "?");
-        par4_resplit(got, gotd);
+        par4_resplit(got, gotd, title);
     }
 }
-static void par4_resplit(NSArray<NSString *> *keys, NSArray *descs) {
+static void par4_resplit(NSArray<NSString *> *keys, NSArray *descs, BOOL title) {
     if (!keys.count || keys.count != descs.count) { atomic_fetch_add(&g_par4_lost, keys.count); return; }
     if (keys.count == 1) { atomic_fetch_add(&g_par4_lost, 1); MLOG("【红】Metal 4 管线存档：%s 单独也写不了，不存（画到时现编）", keys[0].UTF8String); return; }
     NSUInteger half = keys.count / 2;
-    par4_capture_chunk([keys subarrayWithRange:NSMakeRange(0, half)], [descs subarrayWithRange:NSMakeRange(0, half)]);
-    par4_capture_chunk([keys subarrayWithRange:NSMakeRange(half, keys.count - half)], [descs subarrayWithRange:NSMakeRange(half, descs.count - half)]);
+    par4_capture_chunk([keys subarrayWithRange:NSMakeRange(0, half)], [descs subarrayWithRange:NSMakeRange(0, half)], title);
+    par4_capture_chunk([keys subarrayWithRange:NSMakeRange(half, keys.count - half)], [descs subarrayWithRange:NSMakeRange(half, descs.count - half)], title);
 }
 /* Packaging (mtl_pipeline_archive_tool): the rows the memory saver keeps before the title (the title list, the App lists'
    compute / mesh / tile-read rows: warm_resident's) are made first, with g_par4_compact set, so a key in a large file is
    compiled again and captured into a small file of its own: opening a Metal 4 file reads all of it (route vm.log: 4.5-5.5
    GB paged in within the first minute for the App's 89 files), and those rows were in nearly every one, so the title
-   waited 8-37 s on a USB drive (played-img-1 / field-img-1). A key already in a small file (PAR4_SMALL pipelines or fewer,
-   by the count in its name) is taken from it. User 2026-11-18: "好 这样改吧" (instead of capturing them again during play). */
-static int g_par4_compact;
+   waited 8-37 s on a USB drive (played-img-1 / field-img-1). A key already in a small file (a title file, or PAR4_SMALL
+   pipelines or fewer: nvn_pso4_policy.h par4_name_small) is taken from it; the periods of this pass are named -title. User 2026-11-18: "好 这样改吧" (instead of capturing them again during play). */
 static int par4_in_small_file(NSString *key) {
     pthread_mutex_lock(&g_par_mu); NSString *name = g_par_where[key]; pthread_mutex_unlock(&g_par_mu);
-    NSUInteger n = name && par4_name(name) ? par4_name_count([name substringFromIndex:3]) : 0;
-    return n && n <= PAR4_SMALL;
+    return name && par4_name(name) && par4_name_small([name substringFromIndex:3]);
 }
 /* The pipeline from the key's Metal 4 file, or compiled through Metal 4 (captured into the archive when it has a key).
    kind: PAR_RENDER / PAR_COMPUTE (desc4 matching). nil: take the old path. */

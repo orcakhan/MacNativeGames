@@ -47,17 +47,8 @@ static NSString *par4_dir(void) { return [totk_rt_dir() stringByAppendingPathCom
 static NSString *par4_lock(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines-mtl4.lock"]; }
 static BOOL par4_name(NSString *name) { return [name hasPrefix:@"m4:"] || [name hasPrefix:@"m4-"]; }
 static NSString *par4_own(NSString *base) { return [@"m4:" stringByAppendingString:base]; }
-/* A file's pipelines by its name, <first key>-<count>[-n] (par_pub_batch_ext; a compute key may carry -tg<size>): the
-   first all-digit part after the key, or 0. PAR4_SMALL or fewer: a small file (the rows kept before the title, packaged
-   apart, nvn_pso4_build.h g_par4_compact; this device's own). */
-#define PAR4_SMALL 1024
-static NSUInteger par4_name_count(NSString *name) {
-    NSArray<NSString *> *parts = [name componentsSeparatedByString:@"-"];
-    NSCharacterSet *notDigit = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
-    for (NSUInteger i = 1; i < parts.count; i++)
-        if (parts[i].length && parts[i].length < 8 && [parts[i] rangeOfCharacterFromSet:notDigit].location == NSNotFound) return (NSUInteger)parts[i].integerValue;
-    return 0;
-}
+/* The file-name rules (count, title mark, small): nvn_pso4_policy.h, tested without Metal. */
+#include "nvn_pso4_policy.h"
 
 /* The folder for this OS, GPU and key format, as par_open_identity does for the old one: another identity's is removed. */
 static int par4_open_identity(id<MTLDevice> dev) {
@@ -144,7 +135,7 @@ static void par4_open_all(id<MTLDevice> dev) {
     /* then the App's small files (the packaging puts the rows kept before the title in small files of their own,
        g_par4_compact), then its large ones: each step before the next, so the warm-up's files are not read beside 4.7 GB */
     NSMutableArray<NSString *> *small = [NSMutableArray array], *large = [NSMutableArray array];
-    for (NSString *n in names) if (![n hasPrefix:@"m4:"]) { NSUInteger c = par4_name_count([n substringFromIndex:3]); [(c && c <= PAR4_SMALL ? small : large) addObject:n]; }
+    for (NSString *n in names) if (![n hasPrefix:@"m4:"]) [(par4_name_small([n substringFromIndex:3]) ? small : large) addObject:n];
     if (!own.count && !small.count && !large.count) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         uint64_t t0 = bp_now();
@@ -174,7 +165,7 @@ static id<MTL4Archive> par4_archive_for(id<MTLDevice> dev, NSString *key, int *o
 
 /* A flush period: its compiler captures what it compiles into its serializer. busy: compiles under way in it. */
 @interface Par4Period : NSObject { @public id<MTL4PipelineDataSetSerializer> ser; id<MTL4Compiler> comp; dispatch_group_t busy;
-    NSMutableArray<NSString *> *keys; NSMutableArray *descs; NSUInteger captured; int batch; uint64_t deaths; }   // descs: each key's Metal 4 description (par4_resplit); deaths: g_par4_deaths when it began
+    NSMutableArray<NSString *> *keys; NSMutableArray *descs; NSUInteger captured; int batch; uint64_t deaths; BOOL title; }   // descs: each key's Metal 4 description (par4_resplit); deaths: g_par4_deaths when it began; title: the rows kept before the title (named -title, nvn_pso4_policy.h)
 @end
 @implementation Par4Period
 @end
@@ -183,6 +174,7 @@ static Par4Period *g_par4_period;          // g_par4_mu
 static int g_par4_capture_off;             // g_par4_mu: capturing failed in a new period, so it stays off this run
 static uint64_t g_par4_last_capture;       // g_par4_mu: bp_now() of the last capture (the timer's flush)
 static int g_par4_timer;                   // g_par4_mu: a timer is set
+static int g_par4_compact;                 // packaging's pass over the rows kept before the title (nvn_pso4_build.h)
 /* The compiler service (MTLCompilerService) dying under any compile takes every compile it holds down, the captures of the
    periods not yet written among them, whether or not one of them reported it; a period then written holds pipelines whose
    functions are missing, and the next start aborts in Metal's lookup of that file (nxnative 9bd8bb38, MIT: Ocarina of Time,
@@ -222,9 +214,11 @@ static id<MTL4Compiler> par4_plain(id<MTLDevice> dev) {   // no serializer: pipe
         if (!c) MLOG("【红】Metal 4 编译器建不了（%s），管线走旧路", e.localizedDescription.UTF8String ?: "?"); });
     return c;
 }
-/* A new period: its own serializer and the compiler bound to it, or nil (no batch lock, or Metal refused). */
-static Par4Period *par4_new_period(id<MTLDevice> dev) {
+/* A new period: its own serializer and the compiler bound to it, or nil (no batch lock, or Metal refused). title: it holds
+   the rows kept before the title (g_par4_compact when it began, or the period it captures again). */
+static Par4Period *par4_new_period(id<MTLDevice> dev, BOOL title) {
     Par4Period *p = [Par4Period new]; p->busy = dispatch_group_create(); p->keys = [NSMutableArray array]; p->descs = [NSMutableArray array];
+    p->title = title;
     p->deaths = atomic_load(&g_par4_deaths);
     p->batch = par_batch_begin();   // Metal's build folder of this serializer is removed once it is written (totk_pipeline_archive_folders.h)
     MTL4PipelineDataSetSerializerDescriptor *sd = [MTL4PipelineDataSetSerializerDescriptor new];
@@ -243,7 +237,7 @@ static Par4Period *par4_enter(id<MTLDevice> dev) {
     pthread_mutex_lock(&g_par4_mu);
     Par4Period *p = g_par4_period;
     if (!p && !g_par4_capture_off) {
-        p = par4_new_period(dev);
+        p = par4_new_period(dev, g_par4_compact);
         if (!p) { g_par4_capture_off = 1; MLOG("【红】Metal 4 管线存档：这次新编的管线不存"); }
         else g_par4_period = p;
     }
@@ -279,7 +273,7 @@ static BOOL par4_publish(Par4Period *p, NSArray<NSString *> *keys, NSError **why
     uint64_t t0 = bp_now();
     {
         __block NSError *we = nil; id<MTL4PipelineDataSetSerializer> ser = p->ser;
-        NSString *name = par_pub_batch_ext(par4_dir(), par4_lock(), [keys.firstObject stringByAppendingFormat:@"-%lu", (unsigned long)keys.count], @"mtl4a",
+        NSString *name = par_pub_batch_ext(par4_dir(), par4_lock(), par4_period_base(keys.firstObject, keys.count, p->title), @"mtl4a",
             ^BOOL(NSString *temp) {
                 unlink(temp.fileSystemRepresentation);   // the serializer makes the file itself
                 NSError *e = nil; BOOL ok = [ser serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:temp] error:&e];
@@ -300,8 +294,8 @@ static BOOL par4_publish(Par4Period *p, NSArray<NSString *> *keys, NSError **why
         return NO;
     }
 }
-static void par4_resplit(NSArray<NSString *> *keys, NSArray *descs);   // nvn_pso4_build.h
-static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries);   // nvn_pso4_build.h
+static void par4_resplit(NSArray<NSString *> *keys, NSArray *descs, BOOL title);   // nvn_pso4_build.h
+static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries, BOOL title);   // nvn_pso4_build.h
 /* On par4_queue: waits for the period's compiles, then writes it. A write that fails (2026-11-17: Metal's compiler service
    dropped while serializing a period of 1,945 pipelines, XPC_ERROR_CONNECTION_INTERRUPTED; the same pipelines in periods
    of 25 all wrote) is done again in halves (par4_resplit), so one failure loses as few pipelines as it must. */
@@ -311,7 +305,7 @@ static void par4_write(Par4Period *p) {
     if (atomic_load(&g_par4_deaths) != p->deaths) {   // the compiler service died since the period began (par4_compiler_died): not written, not split
         par4_release(p); atomic_fetch_add(&g_par4_dropped, keys.count);
         MLOG("【红】Metal 4 管线存档：%lu 条没写（这一期开始后编译服务崩溃过），重新编进新的一期 | %lu pipelines not written: the compiler service died since their period began; compiled again into a new one", (unsigned long)keys.count, (unsigned long)keys.count);
-        par4_recapture(keys, descs, 1);
+        par4_recapture(keys, descs, 1, p->title);
         return;
     }
     NSError *why = nil;
@@ -320,7 +314,7 @@ static void par4_write(Par4Period *p) {
     if (ok) return;
     if (atomic_fetch_add(&g_par4_failed, 1) < 64) MLOG("【红】Metal 4 管线存档：%lu 条写不了（%s），对半拆开再存", (unsigned long)keys.count, why ? why.localizedDescription.UTF8String : "no lock, or publishing failed");
     par4_compiler_died(why);   // the service died while serializing: the other periods begun before it are not written either
-    par4_resplit(keys, descs);
+    par4_resplit(keys, descs, p->title);
 }
 static void par4_timer_fire(void) {   // on par4_queue
     Par4Period *p = nil; int again = 0;
