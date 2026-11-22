@@ -41,8 +41,8 @@ flexíveis: esses foram descartados na fase anterior (branch `orcakhan/pipelines
 - Com os consertos, empacotar do zero leva o mesmo que o arquivo antigo, e um rebuild leva menos.
 - **O A/B de jogo foi medido com o app B empacotado antes dos consertos** (460 MB, ordem ordenada). Os consertos não
   mudam quais chaves o jogo encontra, mas mudam como os pipelines se dividem entre os arquivos, e com isso os bytes lidos
-  ao abrir cada arquivo. Um pacote feito do zero com os consertos (458,9 MB, outra divisão) nunca foi lançado. Ver "O que
-  não foi medido".
+  ao abrir cada arquivo. Um app empacotado do zero com os consertos foi lançado uma vez (2026-11-22): achou as 18.249
+  chaves sem compilar nenhuma. Os tempos dessa abertura não entram no A/B (ver "Lançamento do pacote feito do zero").
 
 ## O que mudou no runtime (só Mac)
 
@@ -337,15 +337,25 @@ medido de novo.
    elas, todo lançamento aborta em `h_nvnQueueSubmitCommands` logo depois de carregar o save. Isso vale para qualquer A/B
    futuro feito por script.
 
+## Lançamento do pacote feito do zero (2026-11-22)
+
+- **Como:** o app B atualizado pelo `update_runtime.py` com o binário final, com a pasta `build/mac-pipelines/botw190`
+  anterior posta de lado, então o arquivo foi gerado do zero (42 s, cache do Metal do id de teste já quente). O jogo foi
+  lançado uma vez, como no A/B (cópias do perfil, saves e configurações, mesmo roteiro, 120 s de jogo).
+- **Pacote:** 10 arquivos `.mtl4a` (453,6 MB) mais 1 `.metalarchive`; bundle de 444.700 KB. Um arquivo de título
+  (`-1453-title`), oito de 1.821 a 2.000 pipelines e o último (984).
+- **Resultado:**
+  - abertura em segundo plano: `App 的小文件 2 个、大文件 8 个`, com o arquivo do título entre os pequenos (antes do
+    conserto A: 1 e 9);
+  - sessão: `取 18249 条，编 0 条 … 走旧路 1 条`, igual ao A/B;
+  - saída 0, nenhum quadro longo, pico de memória 4.106 MB (o A/B deu 4.091 a 4.128 MB para B).
+- **Tempos:** título em 4,1 s, com espera de 1,8 s. Não dá para comparar com o A/B: aberturas avulsas, com o cache de
+  partida, dão ~3,5–4 s (a do pacote ordenado, antes dos consertos: 3,5 s), e as do A/B, com o cache preparado, ~10 s.
+  Um A/B de tempos com este pacote não foi feito.
+
 ## O que não foi medido
 
-- **Um lançamento do jogo com o app reconstruído com os consertos.** O app B foi atualizado com A e B (o arquivo do
-  título virou `-title`, ~455 MB de `.mtl4a`). O lançamento falhou antes do jogo, em "native display link initialization", porque a
-  tela tinha se desligado (23:08). Falta conferir:
-  - a linha de abertura em segundo plano listando o arquivo do título entre os pequenos;
-  - a linha de sessão com `取 18249，编 0`.
-  - Esse app foi reconstruído sobre a pasta ordenada de antes da B: só o arquivo do título é novo. Por isso, ele não
-    valida a nova divisão dos arquivos. Para validar, falta lançar um app empacotado do zero com os consertos.
+- Um A/B de tempos de jogo com o pacote feito do zero (só uma abertura, acima).
 - O empacotamento do OOT com os consertos.
 - Macs mais lentos (M1, M2) e app em disco externo, onde o OOT ganhou em tempo.
 - A migração do lado do jogador: as chaves dos arquivos antigos da própria máquina, recompiladas na primeira abertura.
