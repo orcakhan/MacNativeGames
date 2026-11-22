@@ -40,9 +40,17 @@ class Tool(unittest.TestCase):
 
 class Coverage(unittest.TestCase):
     def test_coverage_is_what_a_second_process_finds(self):
-        c = archive.coverage({'m4_hits': 17000, 'm4_built': 0}, 17897)
+        # every listed key is looked up again by the check run (TOTK_PAR_RECHECK=1): a key not compiled there and not on
+        # the old path was found. Distinct keys, whatever the hit count (a title key is found in both passes once the title
+        # file counts as small, nvn_pso4_policy.h)
+        c = archive.coverage({'m4_hits': 17000, 'm4_built': 0, 'old_path': 897}, 17897)
         self.assertAlmostEqual(c['pct'], 94.988, places=2)
         self.assertTrue(c['ok'])
+        both = archive.coverage({'m4_hits': 18249 + 1453, 'm4_built': 0, 'compact_built': 0, 'old_path': 1}, 18250)
+        self.assertAlmostEqual(both['pct'], 99.9945, places=3)
+        self.assertLessEqual(both['pct'], 100)
+        miss = archive.coverage({'m4_hits': 18200, 'm4_built': 49, 'old_path': 1}, 18250)
+        self.assertAlmostEqual(miss['pct'], 100 * 18200 / 18250, places=3)
 
     def test_a_compile_on_the_check_run_fails_coverage(self):
         # a pipeline the Metal 4 file should hold that the check run compiles again: written, never found

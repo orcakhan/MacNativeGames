@@ -58,7 +58,8 @@ def coverage(check: dict, keys_total: int) -> dict:
     before the title into a small file first, and again on every run while their file holds more than PAR4_SMALL)."""
     title = check.get('compact_built', 0)
     misses = check['m4_built'] - title
-    return {'pct': 100 * check['m4_hits'] / keys_total, 'built_on_check': check['m4_built'], 'title_pass': title,
+    found = keys_total - misses - (check.get('old_path') or 0)   # distinct keys: each listed key is looked up once per pass
+    return {'pct': 100 * found / keys_total, 'built_on_check': check['m4_built'], 'title_pass': title,
             'misses': misses, 'ok': misses == 0,
             'counted_twice': check['m4_hits'] + (check.get('old_path') or 0) > keys_total}
 
