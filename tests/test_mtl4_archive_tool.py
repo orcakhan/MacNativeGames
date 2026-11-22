@@ -47,6 +47,18 @@ class Coverage(unittest.TestCase):
     def test_a_compile_on_the_check_run_fails_coverage(self):
         # a pipeline the Metal 4 file should hold that the check run compiles again: written, never found
         self.assertFalse(archive.coverage({'m4_hits': 17897, 'm4_built': 3}, 17897)['ok'])
+        self.assertFalse(archive.coverage({'m4_hits': 17897, 'm4_built': 1456, 'compact_built': 1453}, 17897)['ok'])
+
+    def test_the_title_file_pass_is_not_a_miss(self):
+        # packaging first compiles the rows kept before the title into a small file of their own (nvn_mtl.m
+        # g_par4_compact); BotW's 1,453 are more than PAR4_SMALL (1,024), so every packaging, the check run included,
+        # compiles them again (2026-11-21): that pass is counted apart, not as a miss
+        c = archive.coverage({'m4_hits': 18249, 'm4_built': 1453, 'compact_built': 1453}, 18250)
+        self.assertTrue(c['ok'])
+        self.assertEqual((c['misses'], c['title_pass']), (0, 1453))
+        text = '[dm] [nvn-mtl] Metal 4 管线存档：标题前常驻的 1469 行放进小文件（新编 1453 条，14.5 s）\n' + (FIX / 'tool.log').read_text(encoding='utf-8')
+        self.assertEqual(archive.parse_tool(text, expect_m4=True)['compact_built'], 1453)
+        self.assertEqual(archive.parse_tool((FIX / 'tool.log').read_text(encoding='utf-8'), expect_m4=True)['compact_built'], 0)
 
 
 class Package(unittest.TestCase):

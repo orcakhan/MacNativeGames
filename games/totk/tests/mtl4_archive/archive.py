@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 TEST_ID = b'<string>org.macnativegames.mtl4test-0000</string>'
 M4_LINE = re.compile(r'Metal 4 管线存档：取 (\d+) 条、编 (\d+) 条（写进 (\d+) 个文件 (\d+) 条），走旧路 (\d+) 条，捕获时让出 (\d+) 次')
+COMPACT_LINE = re.compile(r'Metal 4 管线存档：标题前常驻的 \d+ 行放进小文件（新编 (\d+) 条')
 
 
 def with_bundle_id(blob: bytes, n: int) -> bytes:
@@ -47,11 +48,18 @@ def parse_tool(text: str, expect_m4: bool) -> dict:
     out: dict = dict(zip(('m4_hits', 'm4_built', 'm4_files', 'm4_written', 'old_path', 'gave_up'), vals))
     out['report'] = report
     out['red'] = sum('【红】' in line for line in text.splitlines())
+    c = COMPACT_LINE.findall(text)
+    out['compact_built'] = int(c[-1]) if c else 0
     return out
 
 
 def coverage(check: dict, keys_total: int) -> dict:
-    return {'pct': 100 * check['m4_hits'] / keys_total, 'built_on_check': check['m4_built'], 'ok': check['m4_built'] == 0}
+    """misses: what the check run compiled beyond its title-file pass (compact_built: packaging compiles the rows kept
+    before the title into a small file first, and again on every run while their file holds more than PAR4_SMALL)."""
+    title = check.get('compact_built', 0)
+    misses = check['m4_built'] - title
+    return {'pct': 100 * check['m4_hits'] / keys_total, 'built_on_check': check['m4_built'], 'title_pass': title,
+            'misses': misses, 'ok': misses == 0}
 
 
 def package(made: Path, arch: str, chain: str) -> dict:
