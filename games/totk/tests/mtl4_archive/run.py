@@ -343,6 +343,8 @@ def cmd_game(a) -> dict:
     summary['opens'] = {c: [r['opens'] for r in meas if r['app'] == c] for c in 'AB'}
     summary['gpu_p50_median'] = {c: statistics.median([v for r in meas if r['app'] == c for v in r['gpu_p50']] or [0]) for c in 'AB'}
     summary['b_session_line'] = all(r['m4_session'] for r in meas if r['app'] == 'B')
+    # the independent check of the Metal 4 files: what each B launch took from them and compiled in play
+    summary['b_session'] = [{'taken': r['m4_taken'], 'built': r['m4_built']} for r in meas if r['app'] == 'B']
     return summary
 
 

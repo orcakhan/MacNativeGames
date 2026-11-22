@@ -56,6 +56,11 @@ class Coverage(unittest.TestCase):
         c = archive.coverage({'m4_hits': 18249, 'm4_built': 1453, 'compact_built': 1453}, 18250)
         self.assertTrue(c['ok'])
         self.assertEqual((c['misses'], c['title_pass']), (0, 1453))
+        # a key found twice (in the title-file pass and the main pass, death run 2026-11-21: 18,405 hits for 18,250
+        # keys) is flagged: the share is then not a share of distinct keys
+        self.assertFalse(c['counted_twice'])
+        twice = archive.coverage({'m4_hits': 18405, 'm4_built': 1297, 'compact_built': 1297, 'old_path': 1}, 18250)
+        self.assertTrue(twice['counted_twice'])
         text = '[dm] [nvn-mtl] Metal 4 管线存档：标题前常驻的 1469 行放进小文件（新编 1453 条，14.5 s）\n' + (FIX / 'tool.log').read_text(encoding='utf-8')
         self.assertEqual(archive.parse_tool(text, expect_m4=True)['compact_built'], 1453)
         self.assertEqual(archive.parse_tool((FIX / 'tool.log').read_text(encoding='utf-8'), expect_m4=True)['compact_built'], 0)
@@ -97,6 +102,16 @@ class Game(unittest.TestCase):
         self.assertFalse(self.g['m4_session'])
         s = archive.parse_game([(1.0, '[dm] [nvn-mtl] Metal 4 管线存档（这一局）：取 5 条，编 0 条')])
         self.assertTrue(s['m4_session'])
+
+    def test_session_line_numbers_are_the_independent_check(self):
+        # the check run of packaging compiles the title rows again by design, so the game's own session line is what
+        # shows the Metal 4 files hold them: taken from the archive, and compiled in play (a pipeline the archive lacks)
+        line = ('[dm] [nvn-mtl] Metal 4 管线存档（这一局）：取 18249 条，编 3 条（其中旧文件里的 0 条改存进来），写进 1 个文件 3 条，'
+                '走旧路 1 条，捕获时让出 0 次')
+        s = archive.parse_game([(57.2, line)])
+        self.assertEqual((s['m4_taken'], s['m4_built'], s['m4_written']), (18249, 3, 3))
+        none = archive.parse_game([(1.0, 'nothing')])
+        self.assertEqual((none['m4_taken'], none['m4_built']), (None, None))
 
     def test_tsv_opens(self):
         with tempfile.TemporaryDirectory() as t:

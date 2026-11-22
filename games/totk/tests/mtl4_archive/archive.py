@@ -59,7 +59,8 @@ def coverage(check: dict, keys_total: int) -> dict:
     title = check.get('compact_built', 0)
     misses = check['m4_built'] - title
     return {'pct': 100 * check['m4_hits'] / keys_total, 'built_on_check': check['m4_built'], 'title_pass': title,
-            'misses': misses, 'ok': misses == 0}
+            'misses': misses, 'ok': misses == 0,
+            'counted_twice': check['m4_hits'] + (check.get('old_path') or 0) > keys_total}
 
 
 def package(made: Path, arch: str, chain: str) -> dict:
@@ -104,12 +105,14 @@ def leftover_class(pipeline: dict, libs: dict, mesh: bool = False) -> str:
 LONG = re.compile(r'\[长帧\] 帧 (\d+)（[\d.]+ s）整帧 ([\d.]+) ms，(.*)')
 TITLE = re.compile(r'预热和管线存档完成后才进标题：又等了 ([\d.]+) s')
 RSS = re.compile(r'内存 至帧 \d+：常驻 (\d+) MB')
+SESSION = re.compile(r'Metal 4 管线存档（这一局）：取 (\d+) 条，编 (\d+) 条(?:.*?写进 \d+ 个文件 (\d+) 条)?')
 GPU = re.compile(r'计时 至帧 \d+：.*GPU p50 ([\d.]+)')
 
 
 def parse_game(lines) -> dict:
     """lines: (seconds since launch, text). Long frames are 100 ms or more (the user's threshold), with their cause."""
-    out = {'title_s': None, 'title_wait_s': None, 'long_frames': [], 'rss_max_mb': None, 'gpu_p50': [], 'm4_session': False}
+    out = {'title_s': None, 'title_wait_s': None, 'long_frames': [], 'rss_max_mb': None, 'gpu_p50': [], 'm4_session': False,
+           'm4_taken': None, 'm4_built': None, 'm4_written': None}
     for t, line in lines:
         m = TITLE.search(line)
         if m and out['title_s'] is None:
@@ -123,8 +126,11 @@ def parse_game(lines) -> dict:
         m = GPU.search(line)
         if m:
             out['gpu_p50'].append(float(m.group(1)))
-        if 'Metal 4 管线存档（这一局）' in line:
+        m = SESSION.search(line)
+        if m:
             out['m4_session'] = True
+            out['m4_taken'], out['m4_built'] = int(m.group(1)), int(m.group(2))
+            out['m4_written'] = int(m.group(3)) if m.group(3) else None
     return out
 
 
