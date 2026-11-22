@@ -21,17 +21,26 @@ flexíveis: esses foram descartados na fase anterior (branch `orcakhan/pipelines
 | Tempo até o título | 10,20 s | 9,88 s | dentro do ruído |
 | Quadros de 100 ms ou mais | 1 | 1 | igual |
 | GPU p50 | 5,50 ms | 5,45 ms | igual |
-| **Gerar o arquivo (empacotar), cache frio** | **74,5 s** | **155,3 s** | **+81 s (2,1×)** |
-| **Gerar o arquivo, cache quente** | **27,0 s** | **147,8 s** | **+121 s (5,5×)** |
+| Gerar o arquivo, cache frio, **antes dos consertos** | 74,5 s | 155,3 s | +81 s (2,1×) |
+| Rebuild sobre a pasta anterior, cache quente, **antes dos consertos** | 4,1 s | 17,1 s | +13 s |
+| **Gerar o arquivo, cache frio, com os consertos A e B** | ~74 s | **~62 s** | **mais rápido** |
+| **Rebuild sobre a pasta anterior, com os consertos** | 22,4 / 4,1 s | **5,7 / 2,6 s** | **mais rápido** |
+| Pipelines no app, gerando do zero **com o conserto B** | 813 MB | 485 MB | −40,3% |
 
-**Recomendação:** aceitar a migração do BotW 1.9.0.
-- O ganho certo ficou no meio da estimativa grosseira (340–520 MB): 460 MB, −43,5% em bytes. Além disso, 2.384
-  arquivos viraram 11.
+**Os dois consertos (2026-11-21, seção "Consertos"):**
+- **A:** o arquivo do título passa a ser reconhecido pelo nome. Com isso, o rebuild deixou de recompilar as 1.453 linhas
+  do título.
+- **B:** as linhas de cada período são intercaladas por função de vértice. Com isso, as capturas deixaram de esperar umas
+  pelas outras.
+
+**Recomendação:** aceitar a migração do BotW 1.9.0 com os dois consertos.
+- O ganho certo: −40,3% em bytes num empacotamento do zero (485 MB), e 2.384 arquivos viraram 11.
 - O jogo usa 414 MB a menos de memória e quase não abre arquivos durante o jogo.
-- Não há ganho de tempo neste Mac, como esperado.
-
-O custo é o tempo de empacotar: cada build ou update do BotW passa a levar uns 80–120 s a mais nesse passo. Há também
-um defeito herdado do OOT que vale consertar à parte (ver "Achados").
+- Não há ganho de tempo de jogo neste Mac, como esperado.
+- Com os consertos, empacotar fica tão rápido quanto antes, ou mais.
+- O A/B de jogo foi medido com o app B empacotado antes dos consertos (460 MB, ordem ordenada). Os consertos mudam a
+  ordem de compilação e os nomes dos arquivos, não o que o jogo encontra. Um lançamento do app B reconstruído com os
+  consertos ficou pendente (ver "O que não foi medido").
 
 ## O que mudou no runtime (só Mac)
 
@@ -171,10 +180,61 @@ Dos 17,1 s do Metal 4 quente, ~14,5 s são o passo do título, que recompila as 
 do `PAR4_SMALL` (ver "Achados") e, por capturar, nunca usa o cache. Sem esse defeito, o rebuild Metal 4 ficaria perto do
 antigo. Isso é estimado, não medido.
 
-**Para quem empacota, hoje:**
+**Para quem empacota, antes dos consertos** (ver "Consertos" abaixo):
 - primeiro build, ou primeira atualização a partir do arquivo antigo: +81 s (155 contra 74,5 s);
 - rebuilds seguintes: +13 s com cache quente (17 contra 4 s), quase todos do passo do título.
 - O OOT já paga isso.
+
+### Consertos (2026-11-21, usuário: "Fazer os dois")
+
+Os dois só mexem no empacotamento do Mac com o Metal 4. O preparo antes do título no primeiro início, o arquivo antigo, o
+modo do aparelho (iPad) e o iOS ficam como estavam. O código é compartilhado com o OOT no Mac, cujo empacotamento não foi
+medido de novo.
+
+**Teto, medido antes:** uma geração fria da lista inteira com o `fn4_claim` desligado (binário de diagnóstico) levou
+**72,7 s**, contra 155,8 s com ele ligado. Na lista ordenada, a espera custava mais da metade do tempo.
+
+**A. O arquivo do título é marcado pelo nome** (`fix(pso4): title periods are marked by name`).
+- O que mudou:
+  - Os períodos do passo do título geram `<primeira chave>-<n>-title.mtl4a`.
+  - "Pequeno" passa a ser: arquivo de título, ou até 1.024 pipelines como antes (`nvn_pso4_policy.h par4_name_small`).
+  - Um período recapturado depois da morte do serviço herda a marca.
+- Testes:
+  - `tests/pso4_policy_probe.m` testa as regras de nome sem Metal;
+  - `tests/test_pso4_policy.py` confere que o código usa essas regras.
+- Medido:
+  - Rebuild sobre a pasta Metal 4 anterior: **6,7 s frio / 2,8 s quente**, contra 19,3 / 17,1 s. O arquivo antigo leva
+    22,4 / 4,1 s.
+  - O passo do título compila **0** em vez de 1.453 (0,2 s).
+  - No cenário de morte, as linhas recapturadas caem em dois arquivos `-title`.
+  - Atualizar um app empacotado antes da A recompila as 1.453 uma vez (4,6 s) e apaga o arquivo antigo do título.
+
+**B. Cada período tem as linhas intercaladas por função de vértice**
+(`perf(pso4): packaging spreads each period's rows by vertex function`).
+- O que mudou:
+  - A lista continua ordenada, para os shaders de um bloco carregarem uma vez.
+  - Os blocos têm o tamanho de um período (2.000 linhas).
+  - Dentro do bloco, as linhas de cada função de vértice ficam espaçadas por igual, a partir de um deslocamento próprio
+    (razão áurea), em `nvn_pso4_policy.h par4_spread`.
+- Disputa: janelas de 8 linhas com função de vértice repetida caem de 97,5% para 17,2%.
+- **Por que blocos de um período:** um arquivo `.mtl4a` guarda o código de uma função uma vez só. Com blocos de 8.192,
+  as linhas de uma função se espalhavam por vários arquivos, e os pipelines no app subiam de 460 para **581 MB**.
+
+| Geração fria, na tomada, alternando | 1 | 2 | 3 | Mediana | Tamanho | Memória da ferramenta |
+|---|---|---|---|---|---|---|
+| Blocos de 2.000 (o que ficou) | 58,8 s | 61,6 s | 70,6 s | **61,6 s** | **485 MB** | ~748 MB |
+| Blocos de 8.192 | 68,9 s | 85,2 s | 83,8 s | 83,8 s | 581 MB | ~800 MB |
+| Ordenado, sem o conserto | | | | 155,8 s | 460 MB | ~700 MB |
+| Arquivo antigo (referência) | | | | ~70–76 s | 813 MB | — |
+
+- **Variação:** os tempos sobem ao longo da sequência nas duas variantes, provavelmente pelo aquecimento da máquina.
+- **Outros cenários com o conserto:** atualizar a partir do arquivo antigo levou ~64–72 s, contra 155 s antes; o cenário
+  de morte, ~67–72 s.
+- **Cobertura:** 99,99%, com 0 chaves faltando, nos três cenários.
+- **Custo de tamanho:** +25 MB contra a ordem ordenada (485 contra 460 MB). Pela hipótese do código repetido, viriam de
+  grupos que caem na fronteira entre dois períodos. Não verificado.
+- **Braço antigo e iPad:** o antigo ficou igual (70,5 s frio / 26,2 s quente). O modo do aparelho gera as mesmas 18.221
+  chaves e nenhum `pipelines-mtl4/`.
 
 ## Morte do serviço de compilação
 
@@ -232,29 +292,36 @@ antigo. Isso é estimado, não medido.
 
 | Critério | Limite | Resultado | Disparou? |
 |---|---|---|---|
-| Bundle encolhe menos de 25% (pior entre zero e atualização) e o jogo não melhora | < 25% e sem melhora | −43,4% | não |
+| Bundle encolhe menos de 25% (pior entre zero e atualização) e o jogo não melhora | < 25% e sem melhora | −43,4%; com o conserto B, −40,3% | não |
 | Chaves achadas no Metal 4 | < 90% | 99,99% | não |
 | O iPad deixa de receber o que precisa | qualquer mudança | sem mudança | não |
 
 ## Achados
 
-1. **O arquivo do título do BotW nunca conta como "pequeno".** É um limite do código compartilhado que veio com o OOT;
-   não verifiquei se o OOT também passa dele. Não foi consertado aqui.
+1. **O arquivo do título do BotW nunca contava como "pequeno". Consertado: conserto A.** Era um limite do código
+   compartilhado que veio com o OOT; não verifiquei se o OOT também passa dele.
    - O empacotamento põe as linhas carregadas antes do título num arquivo próprio (`g_par4_compact`). No BotW são 1.453
      pipelines, acima de `PAR4_SMALL` (1.024).
    - **Consequência 1:** todo empacotamento recompila essas 1.453 (~15 s), porque `par4_in_small_file` não as reconhece.
    - **Consequência 2:** no jogo, `par4_open_all` abre esse arquivo junto com os grandes, e não antes deles, como foi
      pensado.
-   - **Consertos possíveis:** subir o limite, ou marcar o arquivo do título pelo nome em vez da contagem. Mexe também no
-     OOT, então fica para você decidir.
-2. **Gerar pelo Metal 4 custa 2× frio e 5,5× quente.** A causa não foi verificada (ver item 3). Se o tempo de
-   empacotamento importar, vale um teste à parte: comparar compile com e sem captura e com o `fn4_claim` desligado.
+2. **Gerar pelo Metal 4 custava 2× frio e 5,5× quente.**
+   - **Causas medidas:** a captura não usa o cache do Metal, e o `fn4_claim` fazia as threads esperarem.
+   - **A espera foi consertada (conserto B):** a geração fria fica em ~62 s.
+   - **Continua:** a captura ainda não usa o cache. Gerar do zero com cache quente também leva ~60 s, contra 26 s do
+     antigo. Mas o rebuild, o caso comum, acha as chaves no arquivo e não compila.
 3. **Ferramenta de medição:** o ambiente de jogo precisa das variáveis `TOTK_GPU_*` que o launcher sempre define. Sem
    elas, todo lançamento aborta em `h_nvnQueueSubmitCommands` logo depois de carregar o save. Isso vale para qualquer A/B
    futuro feito por script.
 
 ## O que não foi medido
 
+- **Um lançamento do jogo com o app reconstruído com os consertos.** O app B foi atualizado com A e B (o arquivo do
+  título virou `-title`, 446 MB). O lançamento falhou antes do jogo, em "native display link initialization", porque a
+  tela tinha se desligado (23:08). Falta conferir:
+  - a linha de abertura em segundo plano listando o arquivo do título entre os pequenos;
+  - a linha de sessão com `取 18249，编 0`.
+- O empacotamento do OOT com os consertos.
 - Macs mais lentos (M1, M2) e app em disco externo, onde o OOT ganhou em tempo.
 - A migração do lado do jogador: as chaves dos arquivos antigos da própria máquina, recompiladas na primeira abertura.
   Nesta máquina, a pasta local tinha uma entrada de 4 KB.
