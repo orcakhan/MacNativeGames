@@ -12344,9 +12344,15 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         /* Packaging with the Metal 4 archive (Mac): captures sharing a vertex function wait on each other (fn4_claim), and
            sorted rows come one vertex shader after another, so the 8 threads mostly waited (Breath of the Wild 1.9.0:
            155.8 s, 72.7 s with the guard off). Period-sized blocks, each spread by vertex function (nvn_pso4_policy.h
-           par4_spread, PAR4_FILL_BLOCK): about 62 s. Still sorted first, so a block's shaders load once and a vertex
-           shader's rows stay in one file. The first-start fill, the old archive and iOS keep this as it was. */
+           par4_spread, PAR4_FILL_BLOCK): about 60-70 s. Still sorted first, so a block's shaders load once, and each block
+           ends its period (par4_cut_block), so a vertex shader's rows stay in one file. The first-start fill, the old
+           archive and iOS keep this as it was. Breath of the Wild 1.9.0 only: Ocarina of Time's packaging has not been
+           measured with it, so it keeps the sorted blocks (review 2026-11-21). */
+#if defined(GAME_BOTW190)
         int spread = g_compute_archive_tool && par4_on();
+#else
+        int spread = 0;
+#endif
         if (spread) block_rows = PAR4_FILL_BLOCK;
 #endif
         for (NSUInteger at = 0; at < rows; at += block_rows) @autoreleasepool {
@@ -12380,6 +12386,9 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
                 fill_row(line, dict, fc);
                 if (dict.count > 256) [dict removeAllObjects];
             }
+#ifdef PSO4_BUILT
+            if (spread) par4_cut_block();   // the block's captures have returned (dispatch_apply): its period is one file
+#endif
             if (done && runtime_warm_progress) { uint64_t d = at + processed; runtime_warm_progress(d, rows, 0, 0, d, rows); }
             /* the packaging tool: "done / rows" each block, which MNG Launcher shows as the step's counter (user
                2026-11-16: "400/40000 个着色器"); the tool has no start-up screen to report to */

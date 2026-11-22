@@ -39,13 +39,15 @@ static NSString *par4_period_base(NSString *first_key, NSUInteger count, BOOL ti
    threads) two shared one, and the threads waited for each other (Breath of the Wild 1.9.0, 2026-11-21: 155.8 s, 72.7 s
    with the guard off). The block's rows are spread instead: the j-th of a group's g rows goes to the fractional position
    (j + o) / g, o the group's own offset in [0, 1) (the golden ratio's multiples, so the many groups of one or two rows
-   spread over the block too instead of meeting at its middle): each group is evenly spaced. The same rows, a
-   deterministic order; nothing else depends on it (fill_row takes each row on its own).
-   A block is one period's worth of rows (nvn_pso4.h PAR4_PERIOD_MAX): a Metal 4 file keeps a function's code once for all
-   its pipelines, so a vertex shader's rows must stay in one period. Spread over blocks of 8,192 rows they reached several
-   files and the App's pipelines grew from 460 to 581 MB. Measured 2026-11-21 (BotW 1.9.0, M5 Pro, on AC, alternating):
-   2,000-row blocks 58.8 / 61.6 / 70.6 s and 485 MB, 8,192-row blocks 68.9 / 85.2 / 83.8 s; sorted 155.8 s, 460 MB;
-   the old archive about 74 s. Windows of 8 rows sharing a vertex shader: 97.5% sorted, 17.2% spread. */
+   spread over the block too instead of meeting at its middle): each group is evenly spaced. The same rows and results
+   (fill_row takes each row on its own); the order decides only which rows share a file.
+   A block is at most one period's worth of rows (nvn_pso4.h PAR4_PERIOD_MAX), and its end closes the period
+   (nvn_pso4.h par4_cut_block): a Metal 4 file keeps a function's code once for all its pipelines, so a vertex shader's
+   rows must stay in one file. Spread over blocks of 8,192 rows they reached several files and the App's pipelines grew
+   from 460 to 581 MB; 2,000-row blocks whose periods closed inside them, 485 MB. Measured 2026-11-21 (BotW 1.9.0, M5
+   Pro, on AC, alternating, before the cut): 2,000-row blocks 58.8 / 61.6 / 70.6 s, 8,192-row blocks 68.9 / 85.2 /
+   83.8 s; sorted 155.8 s; the old archive about 70-76 s. Windows of 8 rows sharing a vertex shader (simulated on the
+   App's lists): 97.5% sorted, 17.2% spread. */
 #define PAR4_FILL_BLOCK 2000
 /* What a row's capture waits on: a render, border or tile-read row's vertex shader (the first 80 bytes of its key,
    nvn_pso_skey.h pso_skey vs: its first 160 hex digits), a compute row's shader; any other row is its own group. */

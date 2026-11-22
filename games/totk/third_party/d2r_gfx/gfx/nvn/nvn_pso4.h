@@ -334,6 +334,20 @@ static void par4_flush(int wait, double timeout_s) {
     if (wait && dispatch_semaphore_wait(done, timeout_s > 0 ? dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout_s * NSEC_PER_SEC)) : DISPATCH_TIME_FOREVER))
         MLOG("【红】Metal 4 管线存档：等写完超过 %.0f s，不等了", timeout_s);
 }
+/* Packaging, the end of a spread fill block (nvn_mtl.m warm_fill_archive, nvn_pso4_policy.h par4_spread): the period is
+   written now when it holds half a period or more, so the next block starts a file of its own. A Metal 4 file keeps a
+   function's code once, and a block spreads each vertex shader's rows over all of it: a period cut inside a block put
+   most of its vertex shaders into two files (Breath of the Wild 1.9.0: 485 MB instead of 460, review 2026-11-21; a fresh
+   fill's blocks capture about 1,680 of their 2,000 rows, the title rows being in their own file). A rebuild's few stale
+   rows stay in the open period instead of making small files. */
+static void par4_cut_block(void) {
+    pthread_mutex_lock(&g_par4_mu);
+    Par4Period *p = g_par4_period;
+    BOOL cut = p && p->captured >= PAR4_PERIOD_MAX / 2;
+    if (cut) g_par4_period = nil;
+    pthread_mutex_unlock(&g_par4_mu);
+    if (cut) dispatch_async(par4_queue(), ^{ par4_write(p); });
+}
 /* Packaging (g_par_recheck): files none of whose keys they still hold, or that this run did not use, go (par_prune_superseded). */
 static NSUInteger par4_prune_superseded(void) {
     if (!par4_on()) return 0;

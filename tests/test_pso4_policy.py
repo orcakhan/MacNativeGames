@@ -73,11 +73,25 @@ class Pso4UsesTheRules(unittest.TestCase):
         # the sorted 512-row blocks
         mtl = (NVN / 'nvn_mtl.m').read_text(encoding='utf-8')
         fill = body(mtl, 'static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t done)')
-        self.assertIn('par4_spread(block)', fill)
-        self.assertIn('PAR4_FILL_BLOCK', fill)
-        self.assertRegex(fill, r'g_compute_archive_tool && par4_on\(\)')
-        self.assertIn('#ifdef PSO4_BUILT', fill)
+        self.assertIn('NSUInteger rows = todo.count, block_rows = WARM_BLOCK;', fill)   # the default stays 512 sorted rows
+        # Breath of the Wild 1.9.0 only, until Ocarina of Time's packaging is measured with it (review 2026-11-21)
+        gate = fill.index('#if defined(GAME_BOTW190)')
+        on = fill.index('int spread = g_compute_archive_tool && par4_on();')
+        self.assertLess(gate, on)
+        self.assertNotIn('#endif', fill[gate:on])
+        self.assertIn('#ifdef PSO4_BUILT', fill[:gate])
+        for line in ('if (spread) block_rows = PAR4_FILL_BLOCK;', 'if (spread) block = par4_spread(block);', 'if (spread) par4_cut_block();'):
+            self.assertIn(line, fill)
         self.assertIn('[todo sortUsingSelector:@selector(compare:)]', fill)   # still sorted first: shaders load once per block
+
+    def test_a_spread_block_ends_its_period(self):
+        # a Metal 4 file keeps a function's code once; a period cut inside a spread block put most of that block's vertex
+        # shaders into two files (Breath of the Wild: 485 MB instead of 460). A block's end writes the period when it holds
+        # half a period or more; a rebuild's few stale rows stay in the open period instead of making small files
+        cut = body((NVN / 'nvn_pso4.h').read_text(encoding='utf-8'), 'static void par4_cut_block(void)')
+        self.assertIn('p->captured >= PAR4_PERIOD_MAX / 2', cut)
+        self.assertIn('g_par4_period = nil;', cut)
+        self.assertIn('par4_write(p)', cut)
 
 
 if __name__ == '__main__':
