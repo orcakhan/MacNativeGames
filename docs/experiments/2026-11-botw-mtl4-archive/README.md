@@ -23,24 +23,26 @@ flexíveis: esses foram descartados na fase anterior (branch `orcakhan/pipelines
 | GPU p50 | 5,50 ms | 5,45 ms | igual |
 | Gerar o arquivo, cache frio, **antes dos consertos** | 74,5 s | 155,3 s | +81 s (2,1×) |
 | Rebuild sobre a pasta anterior, cache quente, **antes dos consertos** | 4,1 s | 17,1 s | +13 s |
-| **Gerar o arquivo, cache frio, com os consertos A e B** | ~74 s | **~62 s** | **mais rápido** |
-| **Rebuild sobre a pasta anterior, com os consertos** | 22,4 / 4,1 s | **5,7 / 2,6 s** | **mais rápido** |
-| Pipelines no app, gerando do zero **com o conserto B** | 813 MB | 485 MB | −40,3% |
+| **Gerar o arquivo do zero, cache frio, com os consertos** (alternando, 3 de cada) | 74,0 / 81,0 / 76,5 s | **74,2 / 74,0 / 71,2 s** | **igual** (mediana −2,5 s, dentro da variação) |
+| **Rebuild sobre a pasta anterior, frio / quente, com os consertos** | 22,4 / 4,1 s | **5,9 / 2,6 s** | **mais rápido** |
+| **Pipelines no app gerando do zero, com os consertos** | 816,9 MB, 2.375 arquivos | **458,9 MB, 11 arquivos** | **−43,8%** |
 
 **Os dois consertos (2026-11-21, seção "Consertos"):**
 - **A:** o arquivo do título passa a ser reconhecido pelo nome. Com isso, o rebuild deixou de recompilar as 1.453 linhas
   do título.
-- **B:** as linhas de cada período são intercaladas por função de vértice. Com isso, as capturas deixaram de esperar umas
-  pelas outras.
+- **B:** as linhas de cada período são intercaladas por função de vértice, e cada bloco fecha o seu período. Com isso, as
+  capturas deixaram de esperar umas pelas outras, sem repetir código entre arquivos. Só no BotW 1.9.0: o empacotamento
+  do OOT não foi medido com ele.
 
 **Recomendação:** aceitar a migração do BotW 1.9.0 com os dois consertos.
-- O ganho certo: −40,3% em bytes num empacotamento do zero (485 MB), e 2.384 arquivos viraram 11.
+- O ganho certo: −43,8% em bytes num empacotamento do zero (458,9 MB), e 2.375 arquivos viraram 11.
 - O jogo usa 414 MB a menos de memória e quase não abre arquivos durante o jogo.
 - Não há ganho de tempo de jogo neste Mac, como esperado.
-- Com os consertos, empacotar fica tão rápido quanto antes, ou mais.
-- O A/B de jogo foi medido com o app B empacotado antes dos consertos (460 MB, ordem ordenada). Os consertos mudam a
-  ordem de compilação e os nomes dos arquivos, não o que o jogo encontra. Um lançamento do app B reconstruído com os
-  consertos ficou pendente (ver "O que não foi medido").
+- Com os consertos, empacotar do zero leva o mesmo que o arquivo antigo, e um rebuild leva menos.
+- **O A/B de jogo foi medido com o app B empacotado antes dos consertos** (460 MB, ordem ordenada). Os consertos não
+  mudam quais chaves o jogo encontra, mas mudam como os pipelines se dividem entre os arquivos, e com isso os bytes lidos
+  ao abrir cada arquivo. Um pacote feito do zero com os consertos (458,9 MB, outra divisão) nunca foi lançado. Ver "O que
+  não foi medido".
 
 ## O que mudou no runtime (só Mac)
 
@@ -158,7 +160,8 @@ capturado).
 
 1. **Compilar com captura não usa o cache do Metal.** Sem captura, o compilador Metal 4 acha tudo no cache (0,6 s, CPU
    do serviço zero). Com o serializador em `CaptureBinaries`, cada pipeline é compilado de novo, com cache quente ou frio.
-   É comportamento do Metal, não do nosso código: o serializador precisa do código que ele mesmo gerou.
+   É comportamento do Metal, não do nosso código. Hipótese, não verificada: o serializador precisa do código que ele
+   mesmo gera, então não aproveita o que está no cache.
 2. **`fn4_claim` custa ~1/3 do tempo.**
    - O que é: duas capturas que usam a mesma função de vértice nunca rodam juntas, e a thread que não consegue a vez fica
      parada esperando.
@@ -213,28 +216,48 @@ medido de novo.
 (`perf(pso4): packaging spreads each period's rows by vertex function`).
 - O que mudou:
   - A lista continua ordenada, para os shaders de um bloco carregarem uma vez.
-  - Os blocos têm o tamanho de um período (2.000 linhas).
+  - Os blocos têm no máximo o tamanho de um período (2.000 linhas).
   - Dentro do bloco, as linhas de cada função de vértice ficam espaçadas por igual, a partir de um deslocamento próprio
     (razão áurea), em `nvn_pso4_policy.h par4_spread`.
-- Disputa: janelas de 8 linhas com função de vértice repetida caem de 97,5% para 17,2%.
-- **Por que blocos de um período:** um arquivo `.mtl4a` guarda o código de uma função uma vez só. Com blocos de 8.192,
-  as linhas de uma função se espalhavam por vários arquivos, e os pipelines no app subiam de 460 para **581 MB**.
+  - No fim de cada bloco o período é escrito (`nvn_pso4.h par4_cut_block`), se tiver pelo menos meio período. Assim um
+    rebuild, com poucas linhas novas, não gera arquivos pequenos.
+  - Só no BotW 1.9.0: o OOT continua com os blocos ordenados até ser medido (revisão de 2026-11-21).
+- Disputa, **simulada** com as listas do app (`spread_sim.py`, não medida no Metal): janelas de 8 linhas com função de
+  vértice repetida caem de 97,5% para 17,2%.
+- **Por que blocos de um período, e por que fechar o período no fim:** um arquivo `.mtl4a` guarda o código de uma
+  função uma vez só.
+  - Com blocos de 8.192, as linhas de uma função se espalhavam por vários arquivos, e os pipelines no app subiam de 460
+    para **581 MB**.
+  - Com blocos de 2.000 sem fechar o período: 485 MB. Um bloco novo captura ~1.680 das suas 2.000 linhas, porque as do
+    título já estão no arquivo dele. Então os períodos fechavam no meio dos blocos, e quase todo grupo daquele bloco caía
+    em dois arquivos (achado da revisão).
+  - Fechando no fim do bloco: **458,9 MB**.
 
-| Geração fria, na tomada, alternando | 1 | 2 | 3 | Mediana | Tamanho | Memória da ferramenta |
+**Final (o que ficou: blocos de 2.000 que fecham o período), na tomada, antigo e novo alternando, geração fria do zero:**
+
+| | 1 | 2 | 3 | Mediana | Tamanho | Memória da ferramenta |
 |---|---|---|---|---|---|---|
-| Blocos de 2.000 (o que ficou) | 58,8 s | 61,6 s | 70,6 s | **61,6 s** | **485 MB** | ~748 MB |
-| Blocos de 8.192 | 68,9 s | 85,2 s | 83,8 s | 83,8 s | 581 MB | ~800 MB |
-| Ordenado, sem o conserto | | | | 155,8 s | 460 MB | ~700 MB |
-| Arquivo antigo (referência) | | | | ~70–76 s | 813 MB | — |
+| Arquivo antigo | 74,0 s | 81,0 s | 76,5 s | 76,5 s | 816,9 MB | ~725 MB |
+| **Metal 4 com os consertos** | 74,2 s | 74,0 s | 71,2 s | **74,0 s** | **458,9 MB** | ~730 MB |
 
-- **Variação:** os tempos sobem ao longo da sequência nas duas variantes, provavelmente pelo aquecimento da máquina.
-- **Outros cenários com o conserto:** atualizar a partir do arquivo antigo levou ~64–72 s, contra 155 s antes; o cenário
-  de morte, ~67–72 s.
-- **Cobertura:** 99,99%, com 0 chaves faltando, nos três cenários.
-- **Custo de tamanho:** +25 MB contra a ordem ordenada (485 contra 460 MB). Pela hipótese do código repetido, viriam de
-  grupos que caem na fronteira entre dois períodos. Não verificado.
-- **Braço antigo e iPad:** o antigo ficou igual (70,5 s frio / 26,2 s quente). O modo do aparelho gera as mesmas 18.221
-  chaves e nenhum `pipelines-mtl4/`.
+- **Mesma rodada de geração** (binário final, 1 repetição): antigo 68,7 s frio; Metal 4 70,7 s frio e 55,9 s quente.
+  - Atualizar a partir do arquivo antigo: 72,1 s, contra 155 s antes. Tamanho 459,3 MB.
+  - Cenário de morte do serviço: 71,3 s, 461,9 MB. As linhas recapturadas caem em arquivos `-title`.
+  - Rebuild sobre a pasta anterior: 5,9 s frio / 2,6 s quente.
+  - Cobertura: 99,99%, com 0 chaves faltando, nos três cenários.
+  - Arquivos: 1.821 a 2.000 pipelines cada, mais o do título (1.453) e o último (984).
+- **Antes de fechar o período, para comparar** (blocos de 2.000, mesmo binário, alternando com 8.192):
+
+| Geração fria, na tomada | 1 | 2 | 3 | Mediana | Tamanho |
+|---|---|---|---|---|---|
+| Blocos de 2.000, sem fechar o período | 58,8 s | 61,6 s | 70,6 s | 61,6 s | 485 MB |
+| Blocos de 8.192 | 68,9 s | 85,2 s | 83,8 s | 83,8 s | 581 MB |
+| Ordenado, sem o conserto | | | | 155,8 s | 460 MB |
+
+- **Variação:** nas duas séries, os tempos variam uns ±10 s entre rodadas e sobem ao longo da sequência, provavelmente
+  pelo aquecimento da máquina. Dizer "igual ao antigo" é o que os dados sustentam, não "mais rápido".
+- **iPad:** o modo do aparelho, rodado com o binário de 8.192 (a trava é a mesma), gera as mesmas 18.221 chaves e nenhum
+  `pipelines-mtl4/`.
 
 ## Morte do serviço de compilação
 
@@ -292,7 +315,7 @@ medido de novo.
 
 | Critério | Limite | Resultado | Disparou? |
 |---|---|---|---|
-| Bundle encolhe menos de 25% (pior entre zero e atualização) e o jogo não melhora | < 25% e sem melhora | −43,4%; com o conserto B, −40,3% | não |
+| Bundle encolhe menos de 25% (pior entre zero e atualização) e o jogo não melhora | < 25% e sem melhora | −43,4%; com os consertos, −43,8% (zero e atualização) | não |
 | Chaves achadas no Metal 4 | < 90% | 99,99% | não |
 | O iPad deixa de receber o que precisa | qualquer mudança | sem mudança | não |
 
@@ -307,7 +330,7 @@ medido de novo.
      pensado.
 2. **Gerar pelo Metal 4 custava 2× frio e 5,5× quente.**
    - **Causas medidas:** a captura não usa o cache do Metal, e o `fn4_claim` fazia as threads esperarem.
-   - **A espera foi consertada (conserto B):** a geração fria fica em ~62 s.
+   - **A espera foi consertada (conserto B):** a geração fria fica no nível do arquivo antigo (mediana 74,0 contra 76,5 s).
    - **Continua:** a captura ainda não usa o cache. Gerar do zero com cache quente também leva ~60 s, contra 26 s do
      antigo. Mas o rebuild, o caso comum, acha as chaves no arquivo e não compila.
 3. **Ferramenta de medição:** o ambiente de jogo precisa das variáveis `TOTK_GPU_*` que o launcher sempre define. Sem
@@ -317,10 +340,12 @@ medido de novo.
 ## O que não foi medido
 
 - **Um lançamento do jogo com o app reconstruído com os consertos.** O app B foi atualizado com A e B (o arquivo do
-  título virou `-title`, 446 MB). O lançamento falhou antes do jogo, em "native display link initialization", porque a
+  título virou `-title`, ~455 MB de `.mtl4a`). O lançamento falhou antes do jogo, em "native display link initialization", porque a
   tela tinha se desligado (23:08). Falta conferir:
   - a linha de abertura em segundo plano listando o arquivo do título entre os pequenos;
   - a linha de sessão com `取 18249，编 0`.
+  - Esse app foi reconstruído sobre a pasta ordenada de antes da B: só o arquivo do título é novo. Por isso, ele não
+    valida a nova divisão dos arquivos. Para validar, falta lançar um app empacotado do zero com os consertos.
 - O empacotamento do OOT com os consertos.
 - Macs mais lentos (M1, M2) e app em disco externo, onde o OOT ganhou em tempo.
 - A migração do lado do jogador: as chaves dos arquivos antigos da própria máquina, recompiladas na primeira abertura.
