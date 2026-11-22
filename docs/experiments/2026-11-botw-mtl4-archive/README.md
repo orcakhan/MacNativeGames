@@ -15,7 +15,7 @@ flexíveis: esses foram descartados na fase anterior (branch `orcakhan/pipelines
 |---|---|---|---|
 | Pipelines no app (bytes) | 814,1 MB | 460,2 MB | **−43,5%** |
 | Pipelines no app (arquivos) | 2.384 | 11 | −2.373 |
-| Chaves achadas no Metal 4 por um 2º processo | — | 18.249 de 18.250 | 99,99% |
+| Chaves tiradas do Metal 4 no jogo (4 de 4 lançamentos, 0 compiladas) | — | 18.249 de 18.250 | 99,99% |
 | Memória residente máxima no jogo | 4.522 MB | 4.108 MB | **−414 MB (−9%)** |
 | Aberturas de arquivo de pipeline num lançamento | 2.538 (4,1 s somados) | 11 (0,58 s) | −2.527 |
 | Tempo até o título | 10,20 s | 9,88 s | dentro do ruído |
@@ -25,8 +25,8 @@ flexíveis: esses foram descartados na fase anterior (branch `orcakhan/pipelines
 | **Gerar o arquivo, cache quente** | **27,0 s** | **147,8 s** | **+121 s (5,5×)** |
 
 **Recomendação:** aceitar a migração do BotW 1.9.0.
-- O ganho certo veio maior que a estimativa: −43,5% em bytes, contra 340–520 MB estimados. Além disso, 2.384 arquivos
-  viraram 11.
+- O ganho certo ficou no meio da estimativa grosseira (340–520 MB): 460 MB, −43,5% em bytes. Além disso, 2.384
+  arquivos viraram 11.
 - O jogo usa 414 MB a menos de memória e quase não abre arquivos durante o jogo.
 - Não há ganho de tempo neste Mac, como esperado.
 
@@ -40,14 +40,16 @@ um defeito herdado do OOT que vale consertar à parte (ver "Achados").
   - **Só Mac.** iOS e visionOS ficam de fora porque `TARGET_OS_IPHONE` vale 1 nos dois.
   - TOTK e BotW 1.6.0 continuam no arquivo antigo.
 - `games/totk/runtime/frontend.m` (arquivo só do Mac): ao fechar a janela, o BotW 1.9.0 chama
-  `mtl_pipeline_archive_quit`, como o OOT. Isso grava o período ainda capturando e imprime a linha de sessão. O TOTK não
-  chama, para não ganhar a espera de `pso_user_queue` a cada fechamento.
+  `mtl_pipeline_archive_quit`, como o OOT. Isso imprime a linha de sessão, como os 4 lançamentos do app B mostram. Também
+  grava o período ainda capturando, mas isso foi **conferido só no código**, igual ao OOT: nenhum lançamento medido tinha
+  período em captura ao fechar (todos com `写进 0 个文件`). O TOTK não chama, para não ganhar a espera de `pso_user_queue`
+  a cada fechamento.
 - Testes:
   - `tests/test_botw_pso4_gate.py` pré-processa o gate para cada jogo e plataforma e confere o fechamento da janela.
   - `tests/test_ipad_pipelines_old_archive.py` garante que o build do iPad continua no arquivo antigo.
   - Os dois foram conferidos por mutação.
-- `tools/gfx_matrix.py`: as 14 configurações compilam, sem avisos novos. Os testes do OOT que tocam o arquivo Metal 4
-  passam.
+- `tools/gfx_matrix.py`: as 14 configurações compilam, e ele não reportou avisos novos em relação ao HEAD. Os testes do
+  OOT que tocam o arquivo Metal 4 passam.
 
 ## Como foi medido
 
@@ -56,6 +58,13 @@ Ferramenta: `games/totk/tests/mtl4_archive/` (`archive.py`, `run.py`), testada e
 - **Bundle id próprio em toda execução.** O cache do Metal é separado por bundle id. Todas as execuções usaram binários
   com `org.macnativegames.mtl4test-NNNN`. O cache `org.macnativegames.totk-native` dos jogos instalados não recebeu
   nenhuma escrita (conferido com `find -newer` antes e depois).
+- **O que foi escrito fora das cópias.** Perfil, saves e configurações reais não foram tocados: só cópias. Mas os
+  lançamentos usam a pasta real do BotW para duas coisas, como a receita de A/B anterior:
+  - a prova da RomFS (`TOTK_ROMFS_PROOF_DIR`): `BotW/.romfs-verified-v1` e `.aoc1-verified-v1` foram reescritos;
+  - o game slot (`TOTK_GAME_SLOT_DIR`): `game-slot/history.log` e `holder`. O `holder` aponta para o último lançamento,
+    já encerrado, o que o slot trata como livre.
+  - O `update_runtime.py` registrou os apps de teste no macOS, com o mesmo bundle id do BotW instalado. Desfeito:
+    `lsregister -u` nos dois e `-f` no app instalado, que voltou a ser o único registrado.
 - **Dois apps de teste**, clones APFS do app instalado, atualizados com `update_runtime.py` a partir do mesmo binário do
   branch:
   - A com `TOTK_PSO_MTL4=0`;
@@ -76,14 +85,19 @@ Ferramenta: `games/totk/tests/mtl4_archive/` (`archive.py`, `run.py`), testada e
 
 ## Cobertura (item 1)
 
-- **Metal 4:** das 18.250 chaves que o braço antigo grava (render e compute), 18.249 foram para o Metal 4. O segundo
-  processo achou todas as 18.249 sem compilar nenhuma, nas 3 repetições, na atualização e na morte do serviço.
+- **Metal 4:** das 18.250 chaves que o braço antigo grava (render e compute), 18.249 foram para o Metal 4.
+  - **No jogo (a prova independente):** os 4 lançamentos do app B (preparo e 3 medidos) imprimem
+    `取 18249 条，编 0 条`. As 18.249 vieram do arquivo e nenhuma foi compilada.
+  - **No segundo processo de empacotamento:** ele achou as 18.249 nas 3 repetições, na atualização e na morte do serviço.
+    Mas ele também recompila de propósito as 1.453 linhas do título (o passo do arquivo pequeno, ver "Achados"), então,
+    para esses ~8% das chaves, ele só acha o que ele mesmo escreveu. A ferramenta desconta esse passo e marca quando uma
+    chave é contada duas vezes (na morte: 18.405 achadas para 18.250 chaves).
   - Critério: ≥ 90%. Resultado: 99,99%.
 - **Resto no arquivo antigo:** 1 pipeline de render, 75.872 bytes. As duas bibliotecas dele não estão na `shader-libs`
   do app: ele usa uma biblioteca feita em tempo de execução, numa função criada fora do `lib_fn`.
 - **As 183 chaves de bibliotecas feitas em tempo de execução** (variantes, contadas na fase anterior): só essa 1 ficou no
-  caminho antigo. As outras passaram pelo `lib_fn`, foram gravadas no Metal 4 e o segundo processo achou todas.
-  - No jogo, a linha de sessão do app B: 18.249 tiradas do arquivo, 0 compiladas, 1 pelo caminho antigo.
+  caminho antigo. Que as outras foram para o Metal 4 e são achadas é **inferido**: nenhuma chave saiu do Metal 4 além
+  dessa, e o jogo compila 0. Elas não foram conferidas uma a uma.
 
 ## Tamanho (item 2)
 
@@ -96,7 +110,12 @@ Medido como o app leva (`mac_pipeline_files`):
 | Metal 4 atualizando sobre a pasta antiga | 10 + 1 | 460.574.384 | −43,4% |
 | Metal 4 com morte do serviço | 11 + 1 | 460.150.256 | −43,5% |
 
-- **Apps de teste:** o bundle `Pipelines-botw190.bundle` dos apps confere, com 800.620 KB (A) contra 446.040 KB (B).
+- **Apps de teste:** o bundle `Pipelines-botw190.bundle` dos apps tem 800.620 KB (A) contra 446.040 KB (B), em
+  `du`. O B confere em arquivos (11). O A tem 2.377 `.metalarchive` contra 2.384 contados pela ferramenta, uma diferença
+  de 7 arquivos cuja causa não verifiquei. Os bytes ficam a menos de 1%.
+- **Linha de base:** o design citava o app instalado (782 MB, 2.478 arquivos, 17.897 chaves). Aqui são 18.250 chaves
+  porque o `update_runtime.py` aplicou a lista de shaders compartilhada mais nova, que acrescenta 367 pipelines. Os dois
+  braços usam a mesma lista.
 - **Atualização:** quase igual ao zero. O arquivo antigo que sobra é maior (535 KB contra 76 KB), porque o arquivo
   original de 8 pipelines vai inteiro, mas a diferença é pequena.
 - **Critério 1:** ≥ 25% no pior dos dois. Resultado: −43,4%.
@@ -125,6 +144,8 @@ Medido como o app leva (`mac_pipeline_files`):
 - **Período perdido:** o período em curso, com 156 pipelines, não foi escrito e foi recapturado num período novo
   (`par4_recapture`).
 - **Resultado:** o segundo processo achou todas as chaves, sem falta.
+- **Limite:** a 150ª captura caiu dentro do passo do título. A recaptura nesse passo foi exercitada, e as linhas do título
+  ficaram divididas entre um arquivo de 156 e outro de 1.297. A recaptura durante o passo principal não foi exercitada.
 
 ## iPad (modo do aparelho)
 
@@ -135,9 +156,13 @@ Medido como o app leva (`mac_pipeline_files`):
   binário do branch:
   - não criou `pipelines-mtl4/`;
   - gerou as mesmas 18.221 chaves com o Metal 4 ligado e com `TOTK_PSO_MTL4=0`.
-- **Falhas que já existiam:** as duas execuções terminam com 29 pipelines que falham com as bibliotecas do aparelho na GPU
-  do Mac, nos dois braços igualmente.
-- **Teste automático:** `tests/test_ipad_pipelines_old_archive.py`.
+- **29 falhas:** as duas execuções terminam com 29 pipelines que falham com as bibliotecas do aparelho na GPU do Mac, nos
+  dois braços igualmente. Não comparei com o `main`.
+- **Quanto essa execução prova:** pouco além do código. No modo do aparelho, o Metal 4 fica desligado nos dois braços por
+  construção, então "ligado = desligado" é quase garantido; o que ela mostra é que nenhum `pipelines-mtl4/` aparece. E ela
+  rodou o binário pela pasta `build` do app do Mac, não pelo caminho que o `device_pipelines.make` usa.
+- **A garantia principal:** a leitura do código e o teste automático `tests/test_ipad_pipelines_old_archive.py`, conferido
+  por mutação.
 - **Critério 3:** não disparou.
 
 ## Jogo no M5 Pro (item 4)
@@ -175,8 +200,8 @@ Medido como o app leva (`mac_pipeline_files`):
 
 ## Achados
 
-1. **O arquivo do título do BotW nunca conta como "pequeno".** Defeito que já existia no caminho do OOT; não foi
-   consertado aqui.
+1. **O arquivo do título do BotW nunca conta como "pequeno".** É um limite do código compartilhado que veio com o OOT;
+   não verifiquei se o OOT também passa dele. Não foi consertado aqui.
    - O empacotamento põe as linhas carregadas antes do título num arquivo próprio (`g_par4_compact`). No BotW são 1.453
      pipelines, acima de `PAR4_SMALL` (1.024).
    - **Consequência 1:** todo empacotamento recompila essas 1.453 (~15 s), porque `par4_in_small_file` não as reconhece.
@@ -195,7 +220,12 @@ Medido como o app leva (`mac_pipeline_files`):
 - Macs mais lentos (M1, M2) e app em disco externo, onde o OOT ganhou em tempo.
 - A migração do lado do jogador: as chaves dos arquivos antigos da própria máquina, recompiladas na primeira abertura.
   Nesta máquina, a pasta local tinha uma entrada de 4 KB.
-- A morte real do serviço de compilação no M1/M2 (#2107). Só a simulada.
+- A morte real do serviço de compilação no M1/M2 (#2107). Só a simulada, e só dentro do passo do título.
+- **Compilar durante o jogo.** Nenhum lançamento do B compilou pipeline (`编 0`), porque o arquivo estava completo. Um
+  pipeline que falte no arquivo é compilado pelo compilador que captura, e a geração mostra esse compilador cerca de 2×
+  mais lento por pipeline. "Quadros longos iguais" vale só para um arquivo completo.
+- **Gravar o último período ao fechar a janela** com captura em curso: conferido só no código. Nenhum fechamento medido
+  tinha o que gravar.
 - Mais de 3 lançamentos por braço e trajetos longos.
 
 ## Porte para o TOTK (só descrito)
@@ -208,5 +238,8 @@ Medido como o app leva (`mac_pipeline_files`):
   - as 2.895 chaves de bibliotecas feitas em tempo de execução;
   - os pipelines de mesh, que ficam no caminho antigo por design;
   - o arquivo do título, que no TOTK deve ser ainda maior que `PAR4_SMALL`.
-- **Medir:** as mesmas medições, com a mesma ferramenta (`run.py`), trocando `rewritten/botw190`. O TOTK tem 1,8 GB e
+- **Antes de reusar a ferramenta:** o `run.py` tem `rewritten/botw190` e a pasta `BotW` fixos. A cobertura por chave e a
+  classificação do resto foram feitas por dois scripts do scratch que não estão no branch. Os dois precisam entrar no
+  `run.py`.
+- **Medir:** as mesmas medições, com a mesma ferramenta. O TOTK tem 1,8 GB e
   4.191 arquivos, e a geração deve passar de 5 minutos.
